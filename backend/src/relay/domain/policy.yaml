@@ -1,0 +1,34 @@
+# Store policy for Pixel & Volt. The policy engine (relay/domain/policy.py) enforces these values,
+# the help articles quote them through {{placeholders}}, and the system prompt summarizes them, so
+# all three always agree. The version is stored on every preview, approval and audit row.
+# Changing a value: bump `version`, run the policy tests, and re-seed so the articles re-render.
+version: "2026-09-01"
+store_timezone: America/New_York
+returns:
+  window_days: 30
+  window_days_refurbished: 15
+  non_returnable: [final_sale, gift_card, digital]
+refunds:
+  auto_approve_limit_cents: 10000          # $100.00. Larger refunds need an operator.
+  velocity_refunds_before_review: 2        # agent-issued refunds in the trailing window
+  velocity_window_days: 90
+  lost_package_days_without_scan: 7
+  late_delivery_grace_days: 2
+  settles_in: "3-5 business days"
+shipping:                                  # store facts the generator and the articles share
+  standard_cents: 599
+  express_cents: 1499
+  free_standard_from_cents: 5000
+  standard_promise_days: 6
+  express_promise_days: 3
+address_changes:
+  allowed_order_statuses: [pending, processing]
+  approval_carrier_statuses: [label_created, in_transit]
+  supported_countries: [US]
+confirmation:
+  token_ttl_minutes: 30
+approvals:
+  expire_after_hours: 24
+  expected_decision: "within 1 business day"
+escalation:
+  response_time_text: "within 1 business day"

@@ -1,0 +1,32 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.hypothesis/
+.coverage
+htmlcov/
+
+# Node and Next.js
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+next-env.d.ts
+npm-debug.log*
+
+# Eval outputs: reports are committed, transcripts stay local (PLAN.md §9.11)
+evals/reports/*/transcripts/
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/
+*.swp

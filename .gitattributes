@@ -1,0 +1,6 @@
+# LF everywhere, including on Windows checkouts (shell scripts and Dockerfiles break on CRLF).
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.ico binary
+*.gif binary

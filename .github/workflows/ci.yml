@@ -1,0 +1,124 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# The live eval subset (needs ANTHROPIC_API_KEY) joins this workflow in Phase 7.
+
+jobs:
+  hygiene:
+    name: Hygiene and secrets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0  # the secret scan covers the whole history
+      - uses: astral-sh/setup-uv@v10
+        with:
+          version: "0.13.9"
+      - name: pre-commit hooks
+        run: uvx pre-commit@4.7.0 run --all-files --show-diff-on-failure
+        env:
+          # These have their own jobs below; the gitleaks hook only scans staged changes.
+          SKIP: mypy,eslint,tsc,gitleaks
+      - name: Scan git history for secrets
+        run: docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.30.1 git --redact --verbose /repo
+
+  backend:
+    name: Backend (ruff, mypy, pytest)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.7-pg18-trixie
+        env:
+          POSTGRES_USER: relay
+          POSTGRES_PASSWORD: relay-ci
+          POSTGRES_DB: relay
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U relay -d relay"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+      redis:
+        image: redis:8.10.3-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      DATABASE_URL: postgresql+asyncpg://relay:relay-ci@localhost:5432/relay
+      REDIS_URL: redis://localhost:6379/0
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          version: "0.13.9"
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - run: uv sync --locked
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run mypy
+      - name: pytest (unit, integration, MCP) with the domain coverage gate
+        run: uv run pytest --cov=relay.domain --cov-report=term --cov-fail-under=90
+
+  frontend:
+    name: Frontend (ESLint, tsc, build)
+    runs-on: ubuntu-latest
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "26"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run build
+
+  stack:
+    name: Docker images and compose stack
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: cp .env.example .env
+      - run: docker compose build
+      - name: Images run as a non-root user
+        run: |
+          for image in relay-backend relay-web; do
+            uid=$(docker run --rm "$image" id -u)
+            echo "$image runs as uid $uid"
+            test "$uid" != "0"
+          done
+      - run: docker compose up --detach --wait
+      - name: Smoke test through Caddy
+        run: |
+          curl --fail --silent --show-error http://127.0.0.1:8080/api/readyz
+          curl --fail --silent --show-error http://127.0.0.1:8080/healthz
+      - name: Seed on the eval clock and verify (embeddings run on the baked-in model)
+        run: |
+          docker compose run --rm -T migrate relay seed --now 2026-09-15T15:00:00-04:00
+          docker compose run --rm -T migrate relay seed --verify
+      - name: Service status and logs
+        if: failure()
+        run: docker compose ps && docker compose logs --no-color
+      - name: Tear down
+        if: always()
+        run: docker compose down --volumes

@@ -1,0 +1,50 @@
+# Install with `make hooks`. CI runs these hooks too; mypy, ESLint and tsc get their own CI jobs,
+# and CI scans the whole git history for secrets, not only the staged changes.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-added-large-files
+        args: ["--maxkb=500"]
+      - id: check-merge-conflict
+      - id: check-toml
+      - id: check-yaml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: mixed-line-ending
+        args: ["--fix=lf"]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.6
+    hooks:
+      - id: ruff-check
+        args: ["--fix"]
+        files: ^backend/
+      - id: ruff-format
+        files: ^backend/
+
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy --strict (backend)
+        entry: bash -c 'cd backend && uv run --locked mypy'
+        language: system
+        files: ^backend/.*\.py$
+        pass_filenames: false
+      - id: eslint
+        name: eslint (frontend)
+        entry: bash -c 'cd frontend && npm run --silent lint'
+        language: system
+        files: ^frontend/.*\.(ts|tsx|js|jsx|mjs)$
+        pass_filenames: false
+      - id: tsc
+        name: tsc (frontend)
+        entry: bash -c 'cd frontend && npm run --silent typecheck'
+        language: system
+        files: ^frontend/.*\.(ts|tsx)$
+        pass_filenames: false

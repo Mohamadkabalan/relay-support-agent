@@ -1,0 +1,23 @@
+# Local Caddy config: one origin for the UI and the API at http://localhost:8080.
+# Production gets its own Caddyfile with automatic HTTPS (Phase 8).
+{
+	admin off
+	auto_https off
+}
+
+:8080 {
+	handle /_caddy/health {
+		respond "ok" 200
+	}
+
+	handle /api/* {
+		# Write responses through as they arrive, so SSE streams aren't buffered.
+		reverse_proxy api:8000 {
+			flush_interval -1
+		}
+	}
+
+	handle {
+		reverse_proxy web:3000
+	}
+}

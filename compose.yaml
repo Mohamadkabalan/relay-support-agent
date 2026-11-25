@@ -1,0 +1,177 @@
+# The full Relay stack. `make up` starts it and waits until every service is healthy;
+# `make dev` layers compose.dev.yaml on top for hot reload.
+# Values come from .env (see .env.example). Host ports bind to 127.0.0.1 only.
+name: relay
+
+x-backend-env: &backend-env
+  RELAY_ENV: ${RELAY_ENV:-dev}
+  RELAY_LOG_LEVEL: ${RELAY_LOG_LEVEL:-INFO}
+  DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-relay}:${POSTGRES_PASSWORD:-relay-dev-only}@postgres:5432/${POSTGRES_DB:-relay}
+  REDIS_URL: redis://redis:6379/0
+
+# The API and the MCP server run from the same image.
+x-backend: &backend
+  build:
+    context: ./backend
+    target: runtime
+  image: relay-backend:latest
+  restart: unless-stopped
+  read_only: true
+  tmpfs:
+    - /tmp
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+    migrate:
+      condition: service_completed_successfully
+
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.7-pg18-trixie
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-relay}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-relay-dev-only}
+      POSTGRES_DB: ${POSTGRES_DB:-relay}
+    volumes:
+      # Postgres 18 images keep data under /var/lib/postgresql/18/docker, so mount the parent.
+      - postgres-data:/var/lib/postgresql
+      - ./deploy/postgres/initdb:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-55432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  redis:
+    image: redis:8.10.3-alpine
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    ports:
+      - "127.0.0.1:${REDIS_HOST_PORT:-56379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  phoenix:
+    image: arizephoenix/phoenix:version-22.0.1-nonroot
+    restart: unless-stopped
+    environment:
+      # Traces live in their own database on the same Postgres server (created by initdb).
+      PHOENIX_SQL_DATABASE_URL: postgresql://${POSTGRES_USER:-relay}:${POSTGRES_PASSWORD:-relay-dev-only}@postgres:5432/phoenix
+      PHOENIX_TELEMETRY_ENABLED: "false"
+      PHOENIX_LOG_MIGRATIONS: "false"  # its default echoes ~1,900 lines of SQL on first boot
+    ports:
+      - "127.0.0.1:${PHOENIX_HOST_PORT:-6006}:6006"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # Distroless image: no shell or curl, but it has Python.
+      test: ["CMD", "/usr/bin/python3.13", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:6006/healthz', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  # One-shot job: apply database migrations, then exit. api and mcp start only after it succeeds.
+  # `make seed` reuses this service to run `relay seed`.
+  migrate:
+    <<: *backend
+    command: ["relay", "db", "upgrade"]
+    restart: "no"
+    environment:
+      <<: *backend-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *backend
+    command: ["relay", "api", "serve", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      <<: *backend-env
+      # The API has no host port; only Caddy reaches it, so trust its X-Forwarded-For.
+      RELAY_FORWARDED_ALLOW_IPS: "*"
+    healthcheck:
+      # /api/readyz returns 503 until Postgres and Redis answer, which fails urlopen.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/readyz', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  mcp:
+    <<: *backend
+    command: ["relay", "mcp", "serve", "--transport", "streamable-http", "--host", "0.0.0.0", "--port", "8001"]
+    environment:
+      <<: *backend-env
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/healthz', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  web:
+    build:
+      context: ./frontend
+      target: runtime
+    image: relay-web:latest
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /app/.next/cache:mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/healthz').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  caddy:
+    image: caddy:2.11.9-alpine
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${RELAY_HTTP_PORT:-8080}:8080"
+    volumes:
+      - ./deploy/Caddyfile.dev:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/_caddy/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  postgres-data:
+  redis-data:
+  caddy-data:
+  caddy-config:

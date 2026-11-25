@@ -1,0 +1,35 @@
+# Hot reload for `make dev`, layered on compose.yaml: dev images, source bind mounts,
+# uvicorn --reload for the backend and `next dev` for the frontend.
+services:
+  migrate:
+    build:
+      target: dev
+    image: relay-backend:dev
+    volumes:
+      - ./backend/src:/app/src:ro
+
+  api:
+    build:
+      target: dev
+    image: relay-backend:dev
+    command: ["relay", "api", "serve", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    volumes:
+      - ./backend/src:/app/src:ro
+
+  mcp:
+    build:
+      target: dev
+    image: relay-backend:dev
+    command: ["relay", "mcp", "serve", "--transport", "streamable-http", "--host", "0.0.0.0", "--port", "8001", "--reload"]
+    volumes:
+      - ./backend/src:/app/src:ro
+
+  web:
+    build:
+      target: dev
+    image: relay-web:dev
+    read_only: false  # next dev writes .next/ and next-env.d.ts
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules  # keep the image's node_modules, not the host's
+      - /app/.next

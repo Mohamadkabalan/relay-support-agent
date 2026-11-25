@@ -1,0 +1,44 @@
+# Retrieval eval (PLAN.md §9.10). Customer-style questions, paraphrased rather than copied from
+# the articles, each labeled with the slug of the article that answers it. Written before the
+# first run of `relay kb eval` and not tuned afterwards.
+queries:
+  - {query: "what does it mean when my order says processing", article: order-status}
+  - {query: "my order has been pending all morning, is something wrong?", article: order-status}
+  - {query: "where can I see where my parcel is right now", article: tracking-a-package}
+  - {query: "the carrier website shows departed facility, what's next", article: tracking-a-package}
+  - {query: "how much is delivery and when is it free", article: shipping-options}
+  - {query: "is there a faster option than regular delivery", article: shipping-options}
+  - {query: "I moved, can you send my stuff to my new apartment instead", article: change-shipping-address}
+  - {query: "typo in my street name on an order that's already on its way", article: change-shipping-address}
+  - {query: "I ordered by mistake, can you stop the order", article: cancel-an-order}
+  - {query: "my headphones showed up four days after you said they would", article: late-deliveries}
+  - {query: "do I get money back if the delivery was late", article: late-deliveries}
+  - {query: "tracking hasn't changed in over a week", article: lost-packages}
+  - {query: "I think UPS lost my box", article: lost-packages}
+  - {query: "it says delivered but there's nothing on my porch", article: delivered-not-received}
+  - {query: "can I get this shipped to my sister in Canada", article: international-shipping}
+  - {query: "how do I tell the driver to leave it at the back door", article: delivery-instructions}
+  - {query: "can I include a birthday message with the package", article: delivery-instructions}
+  - {query: "how long do I have to send something back", article: return-policy}
+  - {query: "I just don't like it, can I return it", article: return-policy}
+  - {query: "steps to send back a speaker I bought", article: start-a-return}
+  - {query: "can I return only one of the two cables I ordered", article: start-a-return}
+  - {query: "I don't have a printer for the return label", article: return-labels-and-drop-off}
+  - {query: "where do I drop off my return box", article: return-labels-and-drop-off}
+  - {query: "I mailed my return last week, when do I see the money", article: refund-timing}
+  - {query: "how many days until the refund shows on my card", article: refund-timing}
+  - {query: "can I send back a gift card I didn't use", article: non-returnable-items}
+  - {query: "is a game download code refundable", article: non-returnable-items}
+  - {query: "what condition are the refurbished phones in", article: refurbished-products}
+  - {query: "the monitor was open box, can I still return it", article: open-box-and-final-sale}
+  - {query: "can I swap the black watch for the silver one", article: exchanges}
+  - {query: "the screen was cracked when I opened the box", article: damaged-or-defective-items}
+  - {query: "my new tablet won't turn on", article: damaged-or-defective-items}
+  - {query: "can you put the refund on my other credit card", article: refund-methods}
+  - {query: "why is my refund waiting for approval", article: refund-reviews}
+  - {query: "the laptop got cheaper the day after I bought it", article: price-adjustments}
+  - {query: "my earbuds stopped working after four months", article: warranty-claims}
+  - {query: "does the protection plan cover dropping my phone", article: voltcare-protection-plans}
+  - {query: "do you take american express", article: payment-methods}
+  - {query: "my wife wants to check on an order I placed for her", article: account-and-privacy}
+  - {query: "I want to talk to a real person", article: contact-support}

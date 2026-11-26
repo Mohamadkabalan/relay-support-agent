@@ -1,10 +1,12 @@
 """The `relay` command-line tool.
 
-Commands so far: `api serve`, `mcp serve`, `db`, `seed`, `kb` and `version`. Later phases add
-`chat`, `eval` and `demo` (PLAN.md §13).
+Commands so far: `api serve`, `mcp serve|token|call`, `db`, `seed`, `kb` and `version`.
+Later phases add `chat`, `eval` and `demo` (PLAN.md §13).
 """
 
 import asyncio
+import json
+import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -15,14 +17,15 @@ import typer
 import uvicorn
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from relay import __version__
+from relay import __version__, turn_tokens
 from relay.config import get_settings
 from relay.db import migrate
 from relay.db.session import engine_from_settings, make_sessionmaker
 from relay.domain.money import format_cents
 from relay.domain.policy_config import default_policy
 from relay.kb.embeddings import Embedder, FastEmbedder
-from relay.mcp_server.server import build_server
+from relay.mcp_server.identity import UnknownCustomerError, bind_customer
+from relay.mcp_server.server import serve_stdio
 
 app = typer.Typer(
     help="Relay command-line tools.", no_args_is_help=True, pretty_exceptions_enable=False
@@ -76,10 +79,17 @@ def mcp_serve(
     port: int = 8001,
     reload: Reload = False,
 ) -> None:
-    """Run the MCP server over Streamable HTTP (for the agent) or stdio (for Claude Desktop)."""
+    """Run the MCP server over Streamable HTTP (for the agent) or stdio (for Claude Desktop).
+
+    Over stdio the server acts for the customer in RELAY_MCP_CUSTOMER (an email address or ID).
+    """
     settings = get_settings()
     if transport is Transport.STDIO:
-        build_server(settings).run("stdio")
+        try:
+            asyncio.run(serve_stdio(settings))
+        except (RuntimeError, UnknownCustomerError) as error:
+            typer.echo(f"relay mcp serve: {error}", err=True)  # stdout belongs to the protocol
+            raise typer.Exit(1) from error
         return
     uvicorn.run(
         "relay.mcp_server.server:create_http_app",
@@ -89,6 +99,84 @@ def mcp_serve(
         reload=reload,
         log_level=settings.log_level.lower(),
     )
+
+
+Customer = Annotated[
+    str, typer.Option("--as", help="Email address or ID of the customer to act for.")
+]
+Turn = Annotated[int, typer.Option(min=1, help="Turn number. A commit needs a later turn.")]
+Conversation = Annotated[
+    str | None, typer.Option(help="Conversation ID. Default: a new one each time.")
+]
+
+
+def _turn_token(customer: str, turn: int, conversation: str | None) -> str:
+    """Mint a per-turn token the way the API will (Phase 5). For development only."""
+    settings = get_settings()
+    if settings.mcp_jwt_secret is None:
+        typer.echo("Set RELAY_MCP_JWT_SECRET first.", err=True)
+        raise typer.Exit(1)
+    secret = settings.mcp_jwt_secret.get_secret_value()
+
+    async def work(engine: AsyncEngine) -> str:
+        async with make_sessionmaker(engine)() as session:
+            scope = await bind_customer(session, customer)
+        return turn_tokens.mint(
+            secret,
+            customer_id=scope.customer_id,
+            conversation_id=uuid.UUID(conversation) if conversation else uuid.uuid7(),
+            turn_seq=turn,
+            now=datetime.now(UTC),
+        )
+
+    try:
+        return _run(work)
+    except UnknownCustomerError as error:
+        typer.echo(str(error), err=True)
+        raise typer.Exit(1) from error
+
+
+@mcp_app.command("token")
+def mcp_token(customer: Customer, turn: Turn = 1, conversation: Conversation = None) -> None:
+    """Print a per-turn token, for calling the HTTP server by hand (development only)."""
+    typer.echo(_turn_token(customer, turn, conversation))
+
+
+@mcp_app.command("call")
+def mcp_call(
+    tool: Annotated[str, typer.Argument(help="Tool name, e.g. get_order.")],
+    arguments: Annotated[str, typer.Argument(help="Tool arguments as a JSON object.")] = "{}",
+    customer: Customer = "dana.whitfield@example.com",
+    turn: Turn = 1,
+    conversation: Conversation = None,
+    url: Annotated[str, typer.Option(help="The MCP endpoint.")] = "http://127.0.0.1:8001/mcp",
+) -> None:
+    """Call one tool over HTTP with a fresh turn token and print the result (development only).
+
+    To confirm a write by hand, preview with --turn 1, then commit with --turn 2 and the same
+    --conversation, passing the confirmation_token from the preview in ARGUMENTS.
+    """
+    import httpx2
+    from mcp import Client
+    from mcp.client.streamable_http import streamable_http_client
+    from mcp_types import TextContent
+
+    token = _turn_token(customer, turn, conversation)
+
+    async def call() -> tuple[bool, str]:
+        headers = {"Authorization": f"Bearer {token}"}
+        async with (
+            httpx2.AsyncClient(headers=headers) as http_client,
+            Client(streamable_http_client(url, http_client=http_client)) as client,
+        ):
+            result = await client.call_tool(tool, json.loads(arguments))
+        text = "".join(block.text for block in result.content if isinstance(block, TextContent))
+        return result.is_error, text
+
+    failed, text = asyncio.run(call())
+    typer.echo(text, err=failed)
+    if failed:
+        raise typer.Exit(1)
 
 
 # ---------------------------------------------------------------- database

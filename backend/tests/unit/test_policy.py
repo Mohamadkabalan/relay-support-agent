@@ -551,9 +551,19 @@ def test_allowed_actions_for_a_fresh_delivery() -> None:
     assert actions.return_.lines == (1,)
     assert actions.return_.window_ends_on == date(2026, 10, 10)
     assert actions.refund[RefundReason.DAMAGED_OR_DEFECTIVE].lines == (1,)
+    assert not actions.refund[RefundReason.DAMAGED_OR_DEFECTIVE].needs_approval
     assert actions.refund[RefundReason.LOST_IN_TRANSIT].code == "NOT_LOST"
     assert actions.refund[RefundReason.LATE_DELIVERY].code == "NOT_LATE"
     assert actions.change_address.code == "TOO_LATE_TO_CHANGE"
+
+
+def test_allowed_actions_flag_a_line_too_expensive_to_refund_without_an_operator() -> None:
+    order = delivered(5, lines=(line(1, price=4999), line(2, price=34999)))
+    damaged_refund = allowed_actions(Facts(order), POLICY, NOW).refund[
+        RefundReason.DAMAGED_OR_DEFECTIVE
+    ]
+    assert (damaged_refund.allowed, damaged_refund.lines) == (True, (1, 2))
+    assert damaged_refund.needs_approval  # one unit of line 2 is over the auto-approve limit
 
 
 def test_allowed_actions_for_a_shipment_in_transit() -> None:

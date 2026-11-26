@@ -2,7 +2,7 @@
 
 A customer-support agent for Pixel & Volt, a fictional online electronics store. Customers chat with it to check orders, track packages, change shipping addresses, start returns and request refunds. The agent acts only through tools on an MCP server, risky actions wait for a human operator, and an eval suite measures the whole system.
 
-> **Status: Phase 1 of 8 (store domain, policy engine, data).** The store, its policy engine and its seed data work; there is no agent or UI yet. [PLAN.md](PLAN.md) has the design and the roadmap; this README becomes the full project README in Phase 8.
+> **Status: Phase 2 of 8 (MCP server).** The store, its policy engine, its seed data and the nine MCP tools work, and Claude Desktop can drive them; there is no agent or UI yet. [PLAN.md](PLAN.md) has the design and the roadmap; this README becomes the full project README in Phase 8.
 
 ## Run it locally
 
@@ -28,6 +28,16 @@ make down    # stops it (make clean also deletes the data volumes)
 docker compose run --rm migrate relay seed --reset --now 2026-09-15T15:00:00-04:00
 ```
 
+## Drive the tools yourself
+
+The agent's nine tools live on Relay's own MCP server. Every tool acts for the customer the connection names, never for an ID in its arguments, and writes go through preview-then-confirm with policy checked on the server. [docs/mcp.md](docs/mcp.md) shows how to connect **Claude Desktop** (a demo script included), open the **MCP Inspector** (`make mcp-inspect`), or call a tool from the shell:
+
+```bash
+make mcp-call TOOL=get_order ARGS='{"order_number": "PV-800101"}'   # as Dana, a demo customer
+```
+
+## Help-center search
+
 `make eval-retrieval` scores help-center search on 40 labeled questions and writes `evals/retrieval/report.md`; the result chose vector search ([ADR-0009](docs/adr/0009-retrieval-vector-search.md)).
 
 ## Develop
@@ -45,9 +55,10 @@ make help    # every target
 ```text
 backend/    Python package `relay`: API (FastAPI), MCP server, CLI, tests
             relay/domain: policy engine (policy.yaml) and the store services
+            relay/mcp_server: the nine tools, identity, strict schemas
             relay/db: models and migrations; relay/seed: demo data; relay/kb: help center
 frontend/   Next.js app: chat widget and operator console (Phase 6)
 deploy/     Caddy and Postgres configuration
-docs/adr/   Architecture decision records
+docs/       mcp.md (Claude Desktop, Inspector); adr/ (architecture decision records)
 evals/      Labeled data and reports (retrieval now; agent evals from Phase 4)
 ```

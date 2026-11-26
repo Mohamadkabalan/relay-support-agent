@@ -11,13 +11,14 @@ from collections.abc import AsyncIterator, Iterator
 
 import pytest
 import pytest_asyncio
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession
 from tests.support.factories import (
     NOW,
     Factory,
     create_test_database,
     drop_test_database,
     make_engine,
+    rollback_sessionmaker,
 )
 
 from relay.clock import FrozenClock
@@ -45,18 +46,24 @@ async def engine(database_url: str) -> AsyncIterator[AsyncEngine]:
 
 
 @pytest_asyncio.fixture
-async def session(engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
-    """A session whose work is rolled back after the test, even if the code under test commits."""
+async def connection(engine: AsyncEngine) -> AsyncIterator[AsyncConnection]:
+    """One connection inside a transaction that is rolled back after the test."""
     async with engine.connect() as connection:
         transaction = await connection.begin()
-        db = AsyncSession(
-            bind=connection, join_transaction_mode="create_savepoint", expire_on_commit=False
-        )
         try:
-            yield db
+            yield connection
         finally:
-            await db.close()
             await transaction.rollback()
+
+
+@pytest_asyncio.fixture
+async def session(connection: AsyncConnection) -> AsyncIterator[AsyncSession]:
+    """A session whose work is rolled back after the test, even if the code under test commits."""
+    db = rollback_sessionmaker(connection)()
+    try:
+        yield db
+    finally:
+        await db.close()
 
 
 @pytest.fixture

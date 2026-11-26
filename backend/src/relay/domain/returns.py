@@ -16,7 +16,7 @@ from relay.domain.money import format_cents
 from relay.domain.numbers import next_rma_number
 from relay.domain.policy import Facts, LineRequest, ReturnRequest, evaluate_return
 from relay.domain.policy_config import PolicyConfig
-from relay.domain.results import ReturnCompleted, WriteResult
+from relay.domain.results import ReturnCompleted, WriteOutcome
 from relay.domain.scope import CustomerScope, Deps, Scope
 from relay.domain.writes import (
     ActionArgs,
@@ -140,6 +140,6 @@ HANDLER = ActionHandler(
 
 async def create_return(
     deps: Deps, scope: CustomerScope, args: ReturnArgs, confirmation_token: str | None = None
-) -> WriteResult:
+) -> WriteOutcome[ReturnCompleted]:
     """The `create_return` tool: a preview without a token, a commit with one."""
     return await preview_or_commit(deps, scope, HANDLER, args, confirmation_token)

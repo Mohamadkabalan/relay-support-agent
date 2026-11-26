@@ -22,7 +22,7 @@ from relay.domain.money import format_cents
 from relay.domain.numbers import next_refund_number
 from relay.domain.policy import Facts, LineRequest, RefundRequest, evaluate_refund
 from relay.domain.policy_config import PolicyConfig
-from relay.domain.results import RefundCompleted, WriteResult
+from relay.domain.results import RefundCompleted, WriteOutcome
 from relay.domain.scope import CustomerScope, Deps, Scope
 from relay.domain.writes import (
     ActionArgs,
@@ -199,6 +199,6 @@ HANDLER = ActionHandler(
 
 async def issue_refund(
     deps: Deps, scope: CustomerScope, args: RefundArgs, confirmation_token: str | None = None
-) -> WriteResult:
+) -> WriteOutcome[RefundCompleted]:
     """The `issue_refund` tool: a preview without a token, a commit with one."""
     return await preview_or_commit(deps, scope, HANDLER, args, confirmation_token)

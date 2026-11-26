@@ -5,10 +5,13 @@ Every setting is documented in `.env.example` at the repository root. Docker Com
 """
 
 from functools import lru_cache
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import AliasChoices, Field, PostgresDsn, RedisDsn
+from pydantic import AliasChoices, Field, PostgresDsn, RedisDsn, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# .env.example ships development secrets containing this marker; production refuses them.
+DEV_SECRET_MARKER = "dev-only"  # noqa: S105 (a marker to refuse, not a secret)
 
 DEFAULT_MCP_ALLOWED_HOSTS = (
     "mcp",
@@ -28,6 +31,7 @@ class Settings(BaseSettings):
         extra="ignore",
         frozen=True,
         validate_by_name=True,  # lets tests pass Settings(database_url=...) by field name
+        hide_input_in_errors=True,  # a rejected value may be a secret: keep it out of logs
     )
 
     env: Literal["dev", "test", "prod"] = "dev"
@@ -50,6 +54,23 @@ class Settings(BaseSettings):
 
     # Host headers the MCP server accepts (DNS-rebinding protection). "name:*" matches any port.
     mcp_allowed_hosts: tuple[str, ...] = DEFAULT_MCP_ALLOWED_HOSTS
+
+    # HS256 key the API signs per-turn tokens with and the MCP server verifies them with
+    # (PLAN.md §6.1). Required to serve MCP over HTTP; not used over stdio.
+    mcp_jwt_secret: SecretStr | None = Field(default=None, min_length=32)
+
+    # The customer a stdio MCP server (Claude Desktop) acts for: an email address or customer ID.
+    mcp_customer: str | None = None
+
+    # Largest MCP request body the HTTP server accepts.
+    mcp_max_request_bytes: int = Field(default=64 * 1024, gt=0)
+
+    @model_validator(mode="after")
+    def _no_dev_secrets_in_prod(self) -> Self:
+        secret = self.mcp_jwt_secret
+        if self.env == "prod" and secret and DEV_SECRET_MARKER in secret.get_secret_value():
+            raise ValueError("RELAY_MCP_JWT_SECRET still has the development value")
+        return self
 
 
 @lru_cache(maxsize=1)

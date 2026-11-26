@@ -1,6 +1,6 @@
 # Relay: implementation plan
 
-> **Status:** approved on 2026-11-22, with decisions D1–D4 accepted as recommended. Phases 0 and 1 are done; Phase 1 is awaiting review. CI hasn't run on GitHub yet because the repository has no remote.
+> **Status:** approved on 2026-11-22, with decisions D1–D4 accepted as recommended. Phases 0, 1 and 2 are done; Phase 2 is awaiting review.
 > Every version, model ID and API behavior in this plan was checked on 2026-11-22 against PyPI, npm, Docker Hub, the Anthropic docs (platform.claude.com/docs) and the MCP Python SDK docs (py.sdk.modelcontextprotocol.io). The cost figures in §9.12 are pre-implementation estimates and are labeled as such. There are no eval results yet, and none appear in this document.
 
 ## Contents
@@ -76,6 +76,8 @@ Your proposed stack stands, with the changes listed after the table.
 | Packaging | uv | 0.13.x |
 | Claude SDK | `anthropic` | 2.12.0 (released 2026-11-20). It has no sampling parameters, emits OpenTelemetry spans natively (beta) and is built on `httpx2`. |
 | MCP SDK | `mcp` | 2.3.0. Provides `MCPServer` and a high-level `Client`, and speaks protocol `2026-07-28` with fallback to `2025-11-25`. |
+| Turn tokens, MCP HTTP client | PyJWT, httpx2 | 2.15.1, 2.16.2 (added in Phase 2; both were already installed as MCP SDK dependencies) |
+| MCP Inspector | `@modelcontextprotocol/inspector` | 2.16.0, run with `npx` by `make mcp-inspect` (added in Phase 2) |
 | OpenAI SDK | `openai` | 3.57.0. Our provider targets the Responses API, which the SDK README calls the primary API. |
 | HTTP API | FastAPI | 0.165.0, with native SSE via `fastapi.sse.EventSourceResponse` |
 | Validation and settings | Pydantic, pydantic-settings | 2.14.4, 2.16.3 |
@@ -456,20 +458,20 @@ This detection layer is for monitoring and for the model's benefit. The defense 
 
 **HTTP (production and evals).** Before each turn the API mints a JWT with these claims: `iss=relay-api`, `aud=relay-mcp`, `sub=<customer id>`, `cid=<conversation id>`, `tseq=<turn number>`, and a 5-minute expiry. It is signed HS256 with a secret that only `api` and `mcp` share. The MCP server's `TokenVerifier` checks the signature, audience and expiry, and returns an `AccessToken` carrying those claims.
 
-**Inside tools.** A tool receives the principal through `Annotated[Principal, Resolve(current_principal)]`, and the order through `Resolve(owned_order)`. `owned_order` raises `[ORDER_NOT_FOUND]` both for orders that don't exist and for orders that belong to someone else. The message is identical, so the error cannot be used to probe for valid order numbers. Resolved parameters never appear in the tool schema, and a client cannot supply them.
+**Inside tools.** A tool receives the customer through `customer: Annotated[CustomerScope, Resolve(current_customer)]`. Resolved parameters never appear in the tool schema, and a client cannot supply them. Ownership is enforced by the domain services, which every caller goes through: `load_owned_order` raises `[ORDER_NOT_FOUND]` both for orders that don't exist and for orders that belong to someone else, with an identical message, so the error cannot be used to probe for valid order numbers. (Changed in Phase 2: the planned `owned_order` resolver would have duplicated that check; see ADR-0003.)
 
 **stdio (Claude Desktop, local demos).** The server is bound to a single customer by `RELAY_MCP_CUSTOMER`. Over stdio there is no Authorization header, so the security boundary is whoever launches the process, as the MCP SDK docs note.
 
-**Tests** use the in-memory `Client(mcp)` with a static principal.
+**Tests** use the in-memory `Client(mcp)` with a fixed `CustomerScope` (`BoundIdentity`), and the HTTP tests mint real tokens.
 
 With protocol 2026-07-28, every request is a self-contained POST with no session, so any `mcp` replica can serve any call. The server's Host allowlist (DNS-rebinding protection) is configured for the compose hostnames.
 
 ### 6.2 Result conventions
 
-- Tools return Pydantic models, so the SDK publishes an output schema and sends both `structured_content` and JSON text.
-- Business outcomes carry a `status` field: `ok` for reads, and `preview`, `completed`, `pending_approval` or `denied` for writes.
-- Failures raise `ToolError("[CODE] message. hint")`, which reaches the model as `is_error: true`. The server's codes are `INVALID_ARGUMENT`, `ORDER_NOT_FOUND`, `LINE_NOT_FOUND`, `CONFIRMATION_INVALID`, `CONFIRMATION_TOO_EARLY`, `CONFLICT` and `INTERNAL` (retryable). The runtime adds `TIMEOUT`, `DUPLICATE_CALL` and `TOO_MANY_CALLS`.
-- Annotations: reads carry `readOnlyHint: true`. Writes carry `readOnlyHint: false`, `destructiveHint: false` and `idempotentHint: true`, since a commit repeated with the same token is idempotent.
+- Tools return Pydantic models, so the SDK publishes an output schema and sends both `structured_content` and JSON text. Write tools return a union of outcomes, which the SDK wraps as `{"result": ...}` in `structured_content`; the text content is the outcome itself.
+- Business outcomes carry a `status` field: `ok` for reads, and `preview`, `completed`, `pending_approval` or `denied` for writes (an escalation reports `open`). So the order's own status is `order_status`, and a shipment's is `shipment_status`.
+- Failures reach the model as `is_error: true` with `[CODE] message hint`. `RelayServer.call_tool` replaces the SDK's "Error executing tool" wrapper with the domain error's own text, turns validation errors into `[INVALID_ARGUMENT] field: problem` without echoing the value, and turns crashes into a generic `[INTERNAL]` message while the traceback goes to the server log. The server's codes are `INVALID_ARGUMENT`, `ORDER_NOT_FOUND`, `LINE_NOT_FOUND`, `CONFIRMATION_INVALID`, `CONFIRMATION_TOO_EARLY`, `CONFLICT` and `INTERNAL` (retryable). The runtime adds `TIMEOUT`, `DUPLICATE_CALL` and `TOO_MANY_CALLS`.
+- Annotations: reads carry `readOnlyHint: true`. Writes carry `readOnlyHint: false`, `destructiveHint: false` and `idempotentHint: true`, since a commit repeated with the same token is idempotent. All tools carry `openWorldHint: false`. The status label is in each tool's `_meta` as `relay/status_label`.
 - The server's `instructions` field explains confirm-then-commit and untrusted text to other clients, such as Claude Desktop.
 
 ### 6.3 Tool catalog
@@ -545,7 +547,7 @@ escalate_to_human(reason: "customer_requested"|"policy_dispute"|"suspected_fraud
                   summary: string, priority?: "normal"|"high")
 ```
 
-Formats such as order numbers (`PV-` followed by 6 digits), US states and ZIP codes, along with every length limit, are validated by Pydantic on the server.
+Formats such as order numbers (`PV-` followed by 6 digits; `pv 104233` and `#104233` are accepted and normalized), US states and ZIP codes, along with every length limit, are validated by Pydantic on the server. The published schemas leave out the keywords strict mode rejects (`maxLength`, `minimum` and the like; `relay/mcp_server/schemas.py`), and the descriptions state those limits instead. A snapshot test pins the whole `tools/list` and checks it against the strict-mode rules and per-request limits (24 optional parameters, 16 union-typed parameters, 20 strict tools): the nine tools use 13 optional parameters and no unions.
 
 The possible results of a write tool:
 
@@ -582,9 +584,11 @@ The possible results of a write tool:
     "lost_in_transit": {"allowed": false, "code": "NOT_LOST"},
     "late_delivery": {"allowed": false, "code": "NOT_LATE"}
   },
-  "change_address": {"allowed": false, "code": "ALREADY_DELIVERED"}
+  "change_address": {"allowed": false, "code": "TOO_LATE_TO_CHANGE"}
 }
 ```
+
+Each entry also carries `needs_approval`. For per-line actions it is true when even one unit of an eligible line needs an operator (a $349.99 item, or a customer under velocity review). A larger request may need one too, and its preview is authoritative. (Fixed in Phase 2: the flag was always false for per-line actions.)
 
 ### 6.5 Claude Desktop
 
@@ -597,7 +601,7 @@ On macOS or Linux:
   "mcpServers": {
     "relay": {
       "command": "docker",
-      "args": ["compose", "-f", "/absolute/path/to/relay/compose.yaml", "run", "--rm", "-T",
+      "args": ["compose", "-f", "/absolute/path/to/relay/compose.yaml", "run", "--rm", "-T", "--no-deps",
                "-e", "RELAY_MCP_CUSTOMER=dana.whitfield@example.com",
                "mcp", "relay", "mcp", "serve", "--transport", "stdio"]
     }
@@ -605,7 +609,7 @@ On macOS or Linux:
 }
 ```
 
-On Windows with the repository inside WSL (your setup), use `"command": "wsl.exe"` with the arguments `["-e", "bash", "-lc", "cd ~/projects/customer-support-agent && docker compose run --rm -T -e RELAY_MCP_CUSTOMER=dana.whitfield@example.com mcp relay mcp serve --transport stdio"]`.
+On Windows with the repository inside WSL (your setup), use `"command": "wsl.exe"` with the arguments `["-e", "bash", "-lc", "cd ~/projects/customer-support-agent && docker compose run --rm -T --no-deps -e RELAY_MCP_CUSTOMER=dana.whitfield@example.com mcp relay mcp serve --transport stdio"]`. `--no-deps` stops `docker compose run` from re-running the `migrate` job on every launch. [docs/mcp.md](docs/mcp.md) has both configurations, a demo script, the Inspector and `make mcp-call`.
 
 I can test the stdio path from WSL, but only you can run Claude Desktop, so you verify this in Phase 2. It also makes a good README demonstration: the policy holds even when a different agent drives the tools.
 
@@ -1173,7 +1177,7 @@ Each phase ends the same way: run every test and linter, fix the failures, then 
 - JWT verification for HTTP and the single-customer binding for stdio.
 - The result conventions, the untrusted-text wrapping, the tool annotations and the Host allowlist.
 - `relay mcp serve --transport streamable-http` (and `--transport stdio`).
-- Instructions for Claude Desktop and the MCP Inspector.
+- Instructions for Claude Desktop and the MCP Inspector ([docs/mcp.md](docs/mcp.md)), plus `relay mcp token` and `relay mcp call` (`make mcp-call`) for calling the HTTP server by hand and in CI. ADR-0003.
 
 **Acceptance criteria**
 
@@ -1391,7 +1395,8 @@ All of these are cheap to change. Tell me if any of them is wrong.
 │   │   │                    previews, approvals, escalations, audit, errors, money
 │   │   ├── kb/              articles/ (30 Markdown articles with policy placeholders), ingest,
 │   │   │                    chunking, search, embeddings, retrieval eval
-│   │   ├── mcp_server/      server, tools, resolvers, auth, schemas
+│   │   ├── turn_tokens.py   per-turn JWTs (minted by the API, verified by the MCP server)
+│   │   ├── mcp_server/      server, runtime (errors, transactions), identity, tools, schemas
 │   │   ├── agent/           loop, scheduler, store, budget, mcp client, prompts/,
 │   │   │                    guardrails/, providers/ (base, anthropic, openai, scripted)
 │   │   ├── api/             app, routes (auth, chat, console, metrics), sse, sessions, ratelimit, spend
@@ -1409,7 +1414,7 @@ All of these are cheap to change. Tell me if any of them is wrong.
 │   ├── baseline.json
 │   └── reports/             <run>/report.md, report.json
 ├── deploy/                  Caddyfile, Caddyfile.dev, systemd/, deploy.sh
-└── docs/                    AGENT_DESIGN.md, EVALS.md, DEPLOY.md, SECURITY.md, adr/
+└── docs/                    mcp.md, AGENT_DESIGN.md, EVALS.md, DEPLOY.md, SECURITY.md, adr/
 ```
 
 ### B. Architecture decision records
@@ -1444,7 +1449,8 @@ ADRs are written during the phase in which each decision lands.
 | `make eval-selftest` | The harness self-tests, with no model calls |
 | `make eval-label` | The labeling CLI for judge validation |
 | `make smoke` | A live end-to-end check that needs a real API key |
-| `make mcp-inspect` | Opens the MCP Inspector against the running server |
+| `make mcp-inspect` | Opens the MCP Inspector on the stdio server, as `MCP_CUSTOMER` (default Dana) |
+| `make mcp-call` | Calls one tool over HTTP with a fresh turn token: `make mcp-call TOOL=get_order ARGS='{...}'` |
 | `make demo-reset` | Does what the nightly timer does |
 
 ### D. Configuration
@@ -1454,7 +1460,8 @@ Selected keys from `.env.example`:
 - `ANTHROPIC_API_KEY` is the only key a reviewer needs.
 - `RELAY_PROVIDER` is `anthropic` by default. It can also be `openai` (which needs `OPENAI_API_KEY` and `RELAY_OPENAI_MODEL`) or `scripted`.
 - Models: `RELAY_AGENT_MODEL=claude-opus-5-5`, `RELAY_AGENT_EFFORT=medium`, `RELAY_SIM_MODEL=claude-opus-5-5`, `RELAY_JUDGE_MODEL=claude-sonnet-5-5`.
-- Infrastructure: `DATABASE_URL`, `REDIS_URL`, `RELAY_MCP_URL`, `RELAY_MCP_JWT_SECRET`, `RELAY_SESSION_SECRET`.
+- Infrastructure: `DATABASE_URL`, `REDIS_URL`, `RELAY_MCP_URL`, `RELAY_MCP_JWT_SECRET` (32+ characters; values containing `dev-only` are refused when `RELAY_ENV=prod`), `RELAY_SESSION_SECRET`.
+- MCP server: `RELAY_MCP_CUSTOMER` (the customer a stdio server acts for), `RELAY_MCP_ALLOWED_HOSTS`, `RELAY_MCP_MAX_REQUEST_BYTES` (64 KiB).
 - Operator and demo: `RELAY_OPERATOR_PASSWORD_HASH`, `RELAY_DEMO_MODE`, `RELAY_DAILY_SPEND_CAP_USD`, `RELAY_STORE_NAME`.
 - Telemetry: `RELAY_TRACE_CONTENT=redacted`, `OTEL_EXPORTER_OTLP_ENDPOINT`.
 

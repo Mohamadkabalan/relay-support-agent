@@ -566,19 +566,24 @@ def _per_line(
     config: PolicyConfig,
     decide: Callable[[LineFacts], Decision],
 ) -> Availability:
+    """Allowed if at least one line is. `needs_approval` is true when even one unit of an eligible
+    line needs an operator; a larger request may need one too, and its preview says so."""
     allowed: list[LineFacts] = []
     first_code: str | None = None
+    needs_approval = False
     for line in order.lines:
         decision = decide(line)
         if decision.outcome is Outcome.DENY:
             first_code = first_code or decision.code
         else:
             allowed.append(line)
+            needs_approval |= decision.outcome is Outcome.NEEDS_APPROVAL
     if not allowed:
         return Availability(allowed=False, code=first_code or "NOTHING_ELIGIBLE")
     ends = [d for line in allowed if (d := return_window_ends_on(order, line, config))]
     return Availability(
         allowed=True,
+        needs_approval=needs_approval,
         window_ends_on=min(ends) if ends else None,
         lines=tuple(line.line_no for line in allowed),
     )

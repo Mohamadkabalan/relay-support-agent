@@ -9,10 +9,12 @@ dependencies = [
     "faker>=40.63",
     "fastapi>=0.165",
     "fastembed>=0.9.1",
+    "httpx2>=2.16.2",
     "mcp>=2.3,<3",
     "pgvector>=0.5.1",
     "pydantic>=2.14",
     "pydantic-settings>=2.16",
+    "pyjwt>=2.15.1",
     "pyyaml>=6.0.4",
     "redis>=8.1",
     "sqlalchemy[asyncio]>=2.1.9",
@@ -66,9 +68,9 @@ select = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101"]  # assert is how pytest works
-"src/relay/db/migrations/versions/*" = ["E501"]
-"src/relay/seed/**" = ["S311"]  # seeded pseudo-randomness is the point: same seed, same data  # generated DDL, reviewed but not rewrapped
+"tests/**" = ["S101", "S105", "S106"]  # assert is how pytest works; secrets there are fakes
+"src/relay/db/migrations/versions/*" = ["E501"]  # generated DDL, reviewed but not rewrapped
+"src/relay/seed/**" = ["S311"]  # seeded pseudo-randomness is the point: same seed, same data
 
 [tool.mypy]
 python_version = "3.14"

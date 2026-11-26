@@ -8,6 +8,7 @@ x-backend-env: &backend-env
   RELAY_LOG_LEVEL: ${RELAY_LOG_LEVEL:-INFO}
   DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-relay}:${POSTGRES_PASSWORD:-relay-dev-only}@postgres:5432/${POSTGRES_DB:-relay}
   REDIS_URL: redis://redis:6379/0
+  RELAY_MCP_JWT_SECRET: ${RELAY_MCP_JWT_SECRET:-dev-only-mcp-turn-token-secret-change-me}
 
 # The API and the MCP server run from the same image.
 x-backend: &backend
@@ -113,6 +114,8 @@ services:
       retries: 20
       start_period: 10s
 
+  # Internal only: the agent reaches it with a per-turn token. Claude Desktop instead launches
+  # `docker compose run ... mcp relay mcp serve --transport stdio` (docs/mcp.md).
   mcp:
     <<: *backend
     command: ["relay", "mcp", "serve", "--transport", "streamable-http", "--host", "0.0.0.0", "--port", "8001"]

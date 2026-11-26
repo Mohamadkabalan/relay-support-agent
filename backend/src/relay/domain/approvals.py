@@ -32,7 +32,7 @@ from relay.domain.results import ApprovalView
 from relay.domain.scope import Deps, OperatorScope, SystemScope
 from relay.domain.writes import ActionArgs, ActionHandler
 
-HANDLERS: dict[WriteAction, ActionHandler[Any]] = {
+HANDLERS: dict[WriteAction, ActionHandler[Any, Any]] = {
     WriteAction.ISSUE_REFUND: refunds.HANDLER,
     WriteAction.CREATE_RETURN: returns.HANDLER,
     WriteAction.CHANGE_ADDRESS: address_changes.HANDLER,
@@ -243,7 +243,7 @@ async def _lock(deps: Deps, approval_number: str) -> Approval:
     return approval
 
 
-def _args_from_payload(handler: ActionHandler[Any], payload: dict[str, Any]) -> ActionArgs:
+def _args_from_payload(handler: ActionHandler[Any, Any], payload: dict[str, Any]) -> ActionArgs:
     fields = {key: value for key, value in payload.items() if key != "action"}
     args: ActionArgs = handler.args_model.model_validate(fields)
     return args

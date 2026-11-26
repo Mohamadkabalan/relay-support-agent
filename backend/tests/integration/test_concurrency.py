@@ -11,7 +11,7 @@ from relay.db.models import Refund
 from relay.domain.enums import RefundReason
 from relay.domain.policy_config import default_policy
 from relay.domain.refunds import RefundArgs, issue_refund
-from relay.domain.results import DeniedResult, PreviewResult, RefundCompleted, WriteResult
+from relay.domain.results import DeniedResult, PreviewResult, RefundCompleted, WriteOutcome
 from relay.domain.scope import CustomerScope, Deps
 
 
@@ -38,7 +38,7 @@ async def test_one_unit_is_refunded_once_even_under_concurrent_commits() -> None
                     assert isinstance(shown, PreviewResult)
                     tokens.append(shown.confirmation_token)
 
-            async def commit(token: str, scope: CustomerScope) -> WriteResult:
+            async def commit(token: str, scope: CustomerScope) -> WriteOutcome[RefundCompleted]:
                 async with AsyncSession(engine) as session, session.begin():
                     return await issue_refund(Deps(session, clock), scope, args, token)
 

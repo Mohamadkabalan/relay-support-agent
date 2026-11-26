@@ -12,6 +12,7 @@ import hashlib
 import math
 import os
 import re
+import threading
 from collections.abc import Sequence
 from typing import Any, Protocol
 
@@ -33,12 +34,14 @@ class FastEmbedder:
     def __init__(self, cache_dir: str | None = None) -> None:
         self._cache_dir = cache_dir or os.environ.get("FASTEMBED_CACHE_PATH")
         self._model: Any = None
+        self._loading = threading.Lock()  # searches embed on worker threads; load the model once
 
     def _load(self) -> Any:
-        if self._model is None:
-            from fastembed import TextEmbedding
+        with self._loading:
+            if self._model is None:
+                from fastembed import TextEmbedding
 
-            self._model = TextEmbedding(MODEL_NAME, cache_dir=self._cache_dir)
+                self._model = TextEmbedding(MODEL_NAME, cache_dir=self._cache_dir)
         return self._model
 
     def embed_documents(self, texts: Sequence[str]) -> list[list[float]]:

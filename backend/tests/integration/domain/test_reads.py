@@ -28,14 +28,14 @@ async def test_list_orders_is_scoped_newest_first_and_filterable(
     new = await factory.order(me, "processing")
     await factory.order(someone_else, "processing")
 
-    listed = await orders.list_orders(deps, factory.scope(me))
+    listed = (await orders.list_orders(deps, factory.scope(me))).orders
     assert [o.number for o in listed] == [new.number, old.number]
     assert listed[0].first_items == ["Aurora Buds 2"]
 
     processing = await orders.list_orders(deps, factory.scope(me), status=OrderStatus.PROCESSING)
-    assert [o.number for o in processing] == [new.number]
+    assert [o.number for o in processing.orders] == [new.number]
     recent = await orders.list_orders(deps, factory.scope(me), placed_after=date(2026, 9, 1))
-    assert [o.number for o in recent] == [new.number]
+    assert [o.number for o in recent.orders] == [new.number]
 
 
 @pytest.mark.parametrize("limit", [0, 21])
@@ -59,7 +59,10 @@ async def test_get_order_shows_lines_payment_note_and_allowed_actions(
     detail = await orders.get_order(deps, factory.scope(me), order.number.lower())
     assert detail.number == order.number
     assert detail.payment == "Visa ending 4242"
-    assert detail.customer_note == "Leave it with the concierge."
+    assert detail.order_status is OrderStatus.DELIVERED
+    assert detail.customer_note is not None
+    assert detail.customer_note.untrusted_text == "Leave it with the concierge."
+    assert detail.customer_note.source == "order_note"
     assert [(line.line, line.refundable_cents) for line in detail.lines] == [(1, 34999), (2, 2500)]
     assert detail.lines[0].return_window_ends_on == date(2026, 10, 10)
     actions = detail.allowed_actions
@@ -72,12 +75,13 @@ async def test_track_shipment_lists_scans_newest_first(deps: Deps, factory: Fact
     me = await factory.customer()
     order = await factory.order(me, "in_transit", last_scan_days_ago=9)
     tracking = await orders.track_shipment(deps, factory.scope(me), order.number)
-    assert tracking.status is ShipmentStatus.IN_TRANSIT
+    assert tracking.shipment_status is ShipmentStatus.IN_TRANSIT
     assert tracking.days_since_last_scan == 9
     assert tracking.stalled
     times = [event.occurred_at for event in tracking.events]
     assert times == sorted(times, reverse=True)
     assert tracking.events[-1].code == "label_created"
+    assert {event.description.source for event in tracking.events} == {"carrier_event"}
 
 
 async def test_track_shipment_for_an_order_that_has_not_shipped(

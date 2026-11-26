@@ -5,6 +5,7 @@ The retrieval eval chose vector search as the default (ADR-0009); the other mode
 eval and for comparison.
 """
 
+import asyncio
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -80,7 +81,8 @@ async def search(
         rows = await session.execute(FULL_TEXT_SQL, {"query": query, "candidates": CANDIDATES})
         rankings.append([(row.id, float(row.score)) for row in rows])
     if mode in (Mode.VECTOR, Mode.HYBRID) and embedder is not None:
-        vector = embedder.embed_query(query)
+        # Embedding is CPU work: run it off the event loop so other requests keep moving.
+        vector = await asyncio.to_thread(embedder.embed_query, query)
         rows = await session.execute(
             VECTOR_SQL, {"embedding": _vector_literal(vector), "candidates": CANDIDATES}
         )

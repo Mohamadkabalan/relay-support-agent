@@ -1,17 +1,18 @@
 """What the services return: read views and write outcomes.
 
-Write outcomes carry a `status`: `preview`, `completed`, `pending_approval` or `denied` (§6.2).
-They are Pydantic models because a committed outcome is stored on its preview and replayed,
-byte for byte, when a commit is retried.
+These are also the MCP tools' results, so they follow its conventions (§6.2): every top-level
+result carries a `status`, `ok` for reads and `preview`, `completed`, `pending_approval` or
+`denied` for writes. Write outcomes are Pydantic models because a committed outcome is stored on
+its preview and replayed, byte for byte, when a commit is retried.
 
-Free text written by customers or carriers (order notes, tracking events) is returned as plain
-strings here; the MCP layer wraps it as untrusted text before the model sees it.
+Free text that someone other than the store wrote (a customer's order note, a carrier's tracking
+event) arrives as `UntrustedText`, so the model sees where it came from and treats it as data.
 """
 
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from relay.domain.address import Address
 from relay.domain.enums import (
@@ -31,10 +32,18 @@ class _View(BaseModel):
     model_config = ConfigDict(frozen=True)
 
 
+class UntrustedText(_View):
+    """Text written by a customer, a carrier or an article author: data, never instructions."""
+
+    untrusted_text: str
+    source: Literal["order_note", "carrier_event", "help_article"]
+
+
 # ---------------------------------------------------------------- reads
 
 
 class CustomerProfile(_View):
+    status: Literal["ok"] = "ok"
     full_name: str
     email: str
     member_since: date
@@ -51,6 +60,11 @@ class OrderSummary(_View):
     item_count: int
     first_items: list[str]
     shipment_status: ShipmentStatus | None
+
+
+class OrderList(_View):
+    status: Literal["ok"] = "ok"
+    orders: list[OrderSummary]
 
 
 class OrderLineView(_View):
@@ -106,14 +120,18 @@ class AvailabilityView(_View):
 
 
 class AllowedActionsView(_View):
-    return_: AvailabilityView
+    # `return` is a Python keyword, so the field is `return_` and only its JSON name is `return`.
+    model_config = ConfigDict(frozen=True, validate_by_name=True, serialize_by_alias=True)
+
+    return_: AvailabilityView = Field(alias="return")
     refund: dict[RefundReason, AvailabilityView]
     change_address: AvailabilityView
 
 
 class OrderDetail(_View):
+    status: Literal["ok"] = "ok"
     number: str
-    status: OrderStatus
+    order_status: OrderStatus
     placed_at: datetime
     promised_delivery_on: date | None
     lines: list[OrderLineView]
@@ -126,22 +144,23 @@ class OrderDetail(_View):
     returns: list[ReturnView]
     refunds: list[RefundView]
     pending_requests: list[PendingRequestView]
-    customer_note: str | None  # untrusted: written by the customer
+    customer_note: UntrustedText | None
     allowed_actions: AllowedActionsView
 
 
 class TrackingEvent(_View):
     occurred_at: datetime
     code: str
-    description: str  # untrusted: carrier text
+    description: UntrustedText
     location: str | None
 
 
 class Tracking(_View):
+    status: Literal["ok"] = "ok"
     order_number: str
     carrier: str
     tracking_number: str
-    status: ShipmentStatus
+    shipment_status: ShipmentStatus
     eta: date | None
     delivered_at: datetime | None
     days_since_last_scan: int | None
@@ -177,30 +196,33 @@ class PendingApprovalResult(_View):
     expected_decision: str
 
 
-class RefundCompleted(_View):
+class CompletedResult(_View):
+    """What a write that went through returns; each action adds its own details."""
+
     status: Literal["completed"] = "completed"
+
+
+class RefundCompleted(CompletedResult):
     refund_number: str
     amount_cents: int
     destination: str
     settles_in: str
 
 
-class ReturnCompleted(_View):
-    status: Literal["completed"] = "completed"
+class ReturnCompleted(CompletedResult):
     rma_number: str
     label_url: str
     instructions: str
     refund_estimate_cents: int
 
 
-class AddressChangeCompleted(_View):
-    status: Literal["completed"] = "completed"
+class AddressChangeCompleted(CompletedResult):
     order_number: str
     shipping_address: Address
 
 
-Completed = RefundCompleted | ReturnCompleted | AddressChangeCompleted
-WriteResult = PreviewResult | DeniedResult | PendingApprovalResult | Completed
+# What one write tool can return: the shared outcomes plus that action's own completion.
+type WriteOutcome[C: CompletedResult] = PreviewResult | DeniedResult | PendingApprovalResult | C
 
 
 class EscalationResult(_View):

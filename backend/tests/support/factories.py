@@ -14,7 +14,13 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncConnection,
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 from sqlalchemy.pool import NullPool
 
 from relay.clock import FrozenClock, local_date
@@ -41,6 +47,14 @@ def server_url() -> str:
             "Postgres and sets it."
         )
     return url
+
+
+def rollback_sessionmaker(connection: AsyncConnection) -> async_sessionmaker[AsyncSession]:
+    """Sessions on a test's connection. Their commits only release savepoints, so the test's
+    rollback still undoes everything, and each session sees what the others flushed."""
+    return async_sessionmaker(
+        bind=connection, join_transaction_mode="create_savepoint", expire_on_commit=False
+    )
 
 
 def make_engine(url: str) -> AsyncEngine:

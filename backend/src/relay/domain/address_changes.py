@@ -15,7 +15,7 @@ from relay.domain.address import Address
 from relay.domain.enums import WriteAction
 from relay.domain.policy import AddressChangeRequest, Facts, evaluate_address_change
 from relay.domain.policy_config import PolicyConfig
-from relay.domain.results import AddressChangeCompleted, WriteResult
+from relay.domain.results import AddressChangeCompleted, WriteOutcome
 from relay.domain.scope import CustomerScope, Deps, Scope
 from relay.domain.writes import ActionArgs, ActionHandler, Plan, preview_or_commit
 
@@ -91,6 +91,6 @@ async def update_shipping_address(
     scope: CustomerScope,
     args: AddressChangeArgs,
     confirmation_token: str | None = None,
-) -> WriteResult:
+) -> WriteOutcome[AddressChangeCompleted]:
     """The `update_shipping_address` tool: a preview without a token, a commit with one."""
     return await preview_or_commit(deps, scope, HANDLER, args, confirmation_token)

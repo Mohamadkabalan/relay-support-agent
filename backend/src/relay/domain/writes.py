@@ -22,10 +22,10 @@ from relay.domain.numbers import next_approval_number
 from relay.domain.policy import Decision, Facts, Outcome
 from relay.domain.policy_config import PolicyConfig
 from relay.domain.results import (
-    Completed,
+    CompletedResult,
     DeniedResult,
     PendingApprovalResult,
-    WriteResult,
+    WriteOutcome,
 )
 from relay.domain.scope import CustomerScope, Deps, Scope
 
@@ -49,16 +49,16 @@ class Plan:
 
 
 @dataclass(frozen=True, slots=True)
-class ActionHandler[A: ActionArgs]:
+class ActionHandler[A: ActionArgs, C: CompletedResult]:
     action: WriteAction
     args_model: type[A]
     plan: Callable[[A, Order, Facts, PolicyConfig, datetime], Plan]
     execute: Callable[
-        [Deps, Scope, A, Order, Facts, Plan, ActionPreview, Approval | None], Awaitable[Completed]
+        [Deps, Scope, A, Order, Facts, Plan, ActionPreview, Approval | None], Awaitable[C]
     ]
-    completed_model: type[Completed]
+    completed_model: type[C]
 
-    def replay(self, stored: dict[str, Any]) -> WriteResult:
+    def replay(self, stored: dict[str, Any]) -> WriteOutcome[C]:
         """Rebuild the outcome stored on a committed preview."""
         match stored.get("status"):
             case "denied":
@@ -69,13 +69,13 @@ class ActionHandler[A: ActionArgs]:
                 return self.completed_model.model_validate(stored)
 
 
-async def preview_or_commit[A: ActionArgs](
+async def preview_or_commit[A: ActionArgs, C: CompletedResult](
     deps: Deps,
     scope: CustomerScope,
-    handler: ActionHandler[A],
+    handler: ActionHandler[A, C],
     args: A,
     confirmation_token: str | None,
-) -> WriteResult:
+) -> WriteOutcome[C]:
     session = deps.session
     committing = confirmation_token is not None
     if committing:
@@ -126,7 +126,7 @@ async def preview_or_commit[A: ActionArgs](
             "Call the tool again without confirmation_token and show the customer the new preview.",
         )
 
-    result: PendingApprovalResult | Completed
+    result: PendingApprovalResult | C
     if decision.outcome is Outcome.NEEDS_APPROVAL:
         result = await request_approval(deps, scope, args, order, preview, plan)
         outcome = PreviewOutcome.PENDING_APPROVAL

@@ -16,6 +16,10 @@ REDIS_HOST_PORT ?= 56379
 RELAY_HTTP_PORT ?= 8080
 PHOENIX_HOST_PORT ?= 6006
 SEED ?= 42
+MCP_CUSTOMER ?= dana.whitfield@example.com
+MCP_INSPECTOR := @modelcontextprotocol/inspector@2.16.0
+# The stdio server Claude Desktop and the Inspector launch, inside the running stack.
+MCP_STDIO = $(COMPOSE) run --rm -T --no-deps -e RELAY_MCP_CUSTOMER=$(MCP_CUSTOMER) mcp relay mcp serve --transport stdio
 
 COMPOSE := docker compose
 COMPOSE_DEV := $(COMPOSE) -f compose.yaml -f compose.dev.yaml
@@ -83,13 +87,20 @@ eval-retrieval: ## Score help-center search on the labeled queries; writes evals
 	$(COMPOSE) run --rm --no-deps -T -v "$(CURDIR)/evals:/evals:ro" migrate \
 		relay kb eval --queries /evals/retrieval/queries.yaml | tee evals/retrieval/report.md
 
+# ---------------------------------------------------------------- MCP server
+
+.PHONY: mcp-inspect mcp-call
+mcp-inspect: ## Open the MCP Inspector on the stdio server as MCP_CUSTOMER (Node 22.23+/24.22+)
+	MCP_INSPECTOR_SECRET_STORE=memory npx -y $(MCP_INSPECTOR) --web -- $(MCP_STDIO)
+
+mcp-call: ## Call one tool over HTTP as MCP_CUSTOMER: make mcp-call TOOL=get_customer [ARGS='{...}']
+	$(COMPOSE) exec -T mcp relay mcp call $(TOOL) '$(or $(ARGS),{})' --as $(MCP_CUSTOMER)
+
 # ---------------------------------------------------------------- later phases
 
-.PHONY: smoke mcp-inspect eval eval-quick eval-selftest eval-label demo-reset
+.PHONY: smoke eval eval-quick eval-selftest eval-label demo-reset
 smoke: ## Live end-to-end check with a real API key (Phase 3)
 	@$(call not_yet,3)
-mcp-inspect: ## Open the MCP Inspector against the running server (Phase 2)
-	@$(call not_yet,2)
 eval: ## Full eval suite, k=3, Markdown + JSON report (Phase 4)
 	@$(call not_yet,4)
 eval-quick: ## The CI eval subset, one trial each (Phase 4)

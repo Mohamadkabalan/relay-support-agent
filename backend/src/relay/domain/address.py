@@ -3,7 +3,7 @@
 import re
 from typing import Annotated, Self
 
-from pydantic import BaseModel, ConfigDict, StringConstraints, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 US_STATES = frozenset(
     [
@@ -81,15 +81,16 @@ class Address(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    recipient_name: Line
-    line1: Line
-    line2: Annotated[str, StringConstraints(strip_whitespace=True, max_length=100)] | None = None
+    recipient_name: Annotated[Line, Field(description="Who receives the package.")]
+    line1: Annotated[Line, Field(description="Street address.")]
+    line2: Annotated[
+        Annotated[str, StringConstraints(strip_whitespace=True, max_length=100)] | None,
+        Field(description="Apartment, suite or unit, if any."),
+    ] = None
     city: Short
-    state: Short
-    postal_code: Annotated[
-        str, StringConstraints(strip_whitespace=True, min_length=3, max_length=12)
-    ]
-    country: Code = "US"
+    state: Annotated[Short, Field(description="Two-letter state code for US addresses, e.g. NY.")]
+    postal_code: Annotated[PostalCode, Field(description="ZIP code for US addresses, e.g. 10001.")]
+    country: Annotated[Code, Field(description="Two-letter country code.")] = "US"
 
     @model_validator(mode="after")
     def _check_us_formats(self) -> Self:

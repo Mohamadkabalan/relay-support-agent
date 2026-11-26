@@ -46,6 +46,7 @@ from relay.domain.results import (
     CustomerProfile,
     OrderDetail,
     OrderLineView,
+    OrderList,
     OrderSummary,
     PendingRequestView,
     RefundView,
@@ -53,6 +54,7 @@ from relay.domain.results import (
     ShipmentSummary,
     Tracking,
     TrackingEvent,
+    UntrustedText,
 )
 from relay.domain.scope import CustomerScope, Deps
 from relay.domain.writes import payment_destination
@@ -102,7 +104,7 @@ async def list_orders(
     status: OrderStatus | None = None,
     placed_after: date | None = None,
     limit: int = 10,
-) -> list[OrderSummary]:
+) -> OrderList:
     if not 1 <= limit <= MAX_LIST_LIMIT:
         raise InvalidArgumentError(
             f"limit must be between 1 and {MAX_LIST_LIMIT}.", "Ask for fewer orders at a time."
@@ -121,7 +123,7 @@ async def list_orders(
             func.timezone(deps.policy.store_timezone, Order.placed_at) >= placed_after
         )
     orders = (await deps.session.scalars(query)).all()
-    return [
+    summaries = [
         OrderSummary(
             number=order.number,
             placed_on=local_date(order.placed_at, deps.policy.tz),
@@ -133,6 +135,7 @@ async def list_orders(
         )
         for order in orders
     ]
+    return OrderList(orders=summaries)
 
 
 async def get_order(deps: Deps, scope: CustomerScope, order_number: str) -> OrderDetail:
@@ -166,7 +169,7 @@ async def get_order(deps: Deps, scope: CustomerScope, order_number: str) -> Orde
 
     return OrderDetail(
         number=order.number,
-        status=order.status,
+        order_status=order.status,
         placed_at=order.placed_at,
         promised_delivery_on=order.promised_delivery_on,
         lines=[_line_view(line, line_facts[line.line_no], facts, deps) for line in order.lines],
@@ -215,7 +218,11 @@ async def get_order(deps: Deps, scope: CustomerScope, order_number: str) -> Orde
             )
             for row in pending
         ],
-        customer_note=order.customer_note,
+        customer_note=(
+            UntrustedText(untrusted_text=order.customer_note, source="order_note")
+            if order.customer_note
+            else None
+        ),
         allowed_actions=_allowed_view(allowed_actions(facts, deps.policy, now)),
     )
 
@@ -246,7 +253,7 @@ async def track_shipment(deps: Deps, scope: CustomerScope, order_number: str) ->
         order_number=order.number,
         carrier=shipment.carrier,
         tracking_number=shipment.tracking_number,
-        status=shipment.status,
+        shipment_status=shipment.status,
         eta=shipment.eta,
         delivered_at=shipment.delivered_at,
         days_since_last_scan=idle,
@@ -255,7 +262,7 @@ async def track_shipment(deps: Deps, scope: CustomerScope, order_number: str) ->
             TrackingEvent(
                 occurred_at=event.occurred_at,
                 code=event.code,
-                description=event.description,
+                description=UntrustedText(untrusted_text=event.description, source="carrier_event"),
                 location=event.location,
             )
             for event in events

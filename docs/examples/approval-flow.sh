@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The approval flow through the HTTP API, with curl (PLAN.md Phase 5, "You check").
+# The approval flow through the HTTP API, with curl (PLAN.md Phase 5, "Manual check").
 #
 #   1. Sign in as a private demo copy of Dana, whose $349.99 headphones arrived cracked.
 #   2. Ask for a refund, then confirm it. Over $100, it waits for an operator.

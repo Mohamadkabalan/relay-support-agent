@@ -1,11 +1,11 @@
-# Relay: implementation plan
+# Relay: design and implementation plan
 
-> **Status:** approved on 2026-11-22, with decisions D1–D4 accepted as recommended. Phases 0 to 5 are done; Phase 5 is awaiting review. The Phase 4 pilot run needs an API key and has not run yet.
+> **Status:** decisions D1–D4 settled on 2026-11-22. Phases 0 to 5 are merged on `main`; Phases 6 to 8 are in progress. The Phase 4 pilot eval run has not happened yet, so this document contains no eval results.
 > Every version, model ID and API behavior in this plan was checked on 2026-11-22 against PyPI, npm, Docker Hub, the Anthropic docs (platform.claude.com/docs) and the MCP Python SDK docs (py.sdk.modelcontextprotocol.io). The cost figures in §9.12 are pre-implementation estimates and are labeled as such. There are no eval results yet, and none appear in this document.
 
 ## Contents
 
-1. [Summary and decisions needed](#1-summary-and-decisions-needed)
+1. [Summary and key decisions](#1-summary-and-key-decisions)
 2. [Scope](#2-scope)
 3. [Stack and verified versions](#3-stack-and-verified-versions)
 4. [Architecture](#4-architecture)
@@ -20,11 +20,11 @@
 13. [Phases and acceptance criteria](#13-phases-and-acceptance-criteria)
 14. [Risks](#14-risks)
 15. [Defaults worth a glance](#15-defaults-worth-a-glance)
-16. [Appendices](#16-appendices): repository layout, ADRs, Make targets, configuration, how we work
+16. [Appendices](#16-appendices): repository layout, ADRs, Make targets, configuration, working rules
 
 ---
 
-## 1. Summary and decisions needed
+## 1. Summary and key decisions
 
 Relay is a customer-support agent for **Pixel & Volt**, a fictional online electronics store (the name is one config value). Customers chat with it to check orders, track packages, change shipping addresses, start returns and request refunds. The agent acts only through tools on an MCP server we build. Risky actions wait for a human in an operator console. Every turn is traced, and quality is measured by a simulated-customer eval suite that checks the final database state.
 
@@ -35,13 +35,13 @@ Six decisions shape the rest of the plan:
 3. **Policy outcomes are data; failures are errors.** "Denied: delivered 31 days ago and the window is 30" is a successful tool result with a rule ID and the alternatives. `is_error` is reserved for bad arguments, unknown orders and infrastructure faults. The model gets something it can work with, and the tool-error metric counts real errors only.
 4. **The transcript is append-only.** The system prompt, tool manifest, provider and model are pinned per conversation. History is never edited, and the raw provider payloads are stored and replayed byte for byte. Trusted facts (today's date, an approval decision, an injection warning) arrive as mid-conversation `system` messages, a channel the customer cannot write to. This keeps the prompt cache warm, and it is what Claude Opus 5.5's preserved-thinking check requires: that check rejects requests whose earlier history changed.
 5. **Evals come before the UI.** The eval harness is Phase 4, directly after the agent runtime, so the prompt and the tools are tuned against measurements. The HTTP API and the frontend come after it.
-6. **Grade the end state.** Each eval trial runs on its own database cloned from a seeded template. A trial passes when the final state shows exactly the changes the scenario declares and nothing else. An LLM judge scores tone and helpfulness separately and is validated against 30 transcripts that you label.
+6. **Grade the end state.** Each eval trial runs on its own database cloned from a seeded template. A trial passes when the final state shows exactly the changes the scenario declares and nothing else. An LLM judge scores tone and helpfulness separately and is validated against 30 hand-labeled transcripts.
 
-### Decisions I need from you
+### Decisions that are expensive to reverse
 
-These choices are expensive to reverse. Everything else is a default I picked (§15).
+Everything else is a cheap-to-change default, listed in §15.
 
-| # | Decision | My recommendation | Why it is costly to change later |
+| # | Decision | Chosen | Why it is costly to change later |
 |---|---|---|---|
 | D1 | Confirm-then-commit on all three write tools. It costs one extra customer turn per write. | Yes | It shapes the tool schemas, the system prompt and every write scenario. |
 | D2 | Models behind the published numbers | Agent `claude-opus-5-5`, with effort chosen by an eval sweep. Simulated customer `claude-opus-5-5`. Judge `claude-sonnet-5-5`, which must differ from the model under test. | Changing any of them means re-running every eval and re-validating the judge. |
@@ -52,7 +52,7 @@ These choices are expensive to reverse. Everything else is a default I picked (�
 
 ## 2. Scope
 
-**In scope:** everything in your brief. That covers the nine tools, the policy engine, human approvals, streaming chat, the operator console, tracing, the dashboard, the eval suite with its red-team set and judge, CI gates, Docker deployment with a nightly reset and a spend cap, and the docs.
+**In scope:** the nine tools, the policy engine, human approvals, streaming chat, the operator console, tracing, the dashboard, the eval suite with its red-team set and judge, CI gates, Docker deployment with a nightly reset and a spend cap, and the docs.
 
 **Out of scope for v1** (these go under Limitations in the README):
 
@@ -68,7 +68,7 @@ These choices are expensive to reverse. Everything else is a default I picked (�
 
 ## 3. Stack and verified versions
 
-Your proposed stack stands, with the changes listed after the table.
+The stack, with the reasoning for the less obvious choices after the table.
 
 | Area | Choice | Version (checked 2026-11-22) |
 |---|---|---|
@@ -95,17 +95,17 @@ Your proposed stack stands, with the changes listed after the table.
 | Node | Node.js LTS | 26 in images and CI |
 | Edge proxy | Caddy | 2.11.9 |
 
-Changes from your brief, with the reasons:
+Version choices and the reasons for them:
 
-- **Python 3.14.** It satisfies "3.12+" and has been out for a year, so every dependency ships wheels for it (I checked asyncpg and onnxruntime). Python 3.15.0 shipped in October 2026, which is too recent.
+- **Python 3.14.** It satisfies "3.12+" and has been out for a year, so every dependency ships wheels for it (checked for asyncpg and onnxruntime). Python 3.15.0 shipped in October 2026, which is too recent.
 - **TypeScript 6.0, not 7.0.** typescript-eslint 8.73 declares `typescript >=4.8.4 <6.1.0`, so TypeScript 7 would break linting. We move up once typescript-eslint supports it.
 - **ESLint 9, not 10** (changed in Phase 0). `eslint-config-next` pulls in eslint-plugin-react, -import and -jsx-a11y, which declare ESLint 9 at most, and `create-next-app` 16.4.6 itself installs ESLint 9. npm flags 9.x as no longer supported; we move to 10 once those plugins support it.
 - **Arize Phoenix rather than Langfuse.** Phoenix is one container and can keep its data in our Postgres. Self-hosted Langfuse v3 also needs ClickHouse and S3-compatible storage. Both ingest OpenTelemetry GenAI spans, so a later switch changes the exporter, not the instrumentation.
 - **No `sse-starlette` in our code**, because FastAPI now ships SSE. (The MCP SDK still depends on it internally.)
 - **Caddy in the local stack too.** One origin serves both the UI and `/api`, so session cookies and `EventSource` work without CORS, and SSE passes through the same proxy locally and in production.
-- **Node 26 LTS.** The MCP Inspector's `engines` field requires Node 22.23.4+, 24.22.1+ or 26.12.1+. Your local Node is 24.18.0, so running the Inspector on your host will need a Node update.
+- **Node 26 LTS.** The MCP Inspector's `engines` field requires Node 22.23.4+, 24.22.1+ or 26.12.1+. Running the Inspector on a host with Node 24.18 or older needs a Node update.
 - **PostgreSQL 18.** Version 19.0 came out on 2026-11-19.
-- **ONNX Runtime telemetry off** (added in Phase 1). ONNX Runtime 1.32, which fastembed uses, sends usage telemetry unless `ORT_DISABLE_TELEMETRY` is set. The image sets it, and `relay` sets it before loading the model unless you opted in.
+- **ONNX Runtime telemetry off** (added in Phase 1). ONNX Runtime 1.32, which fastembed uses, sends usage telemetry unless `ORT_DISABLE_TELEMETRY` is set. The image sets it, and `relay` sets it before loading the model unless telemetry is explicitly enabled.
 
 ### Models
 
@@ -612,9 +612,9 @@ On macOS or Linux:
 }
 ```
 
-On Windows with the repository inside WSL (your setup), use `"command": "wsl.exe"` with the arguments `["-e", "bash", "-lc", "cd ~/projects/customer-support-agent && docker compose run --rm -T --no-deps -e RELAY_MCP_CUSTOMER=dana.whitfield@example.com mcp relay mcp serve --transport stdio"]`. `--no-deps` stops `docker compose run` from re-running the `migrate` job on every launch. [docs/mcp.md](docs/mcp.md) has both configurations, a demo script, the Inspector and `make mcp-call`.
+On Windows with the repository inside WSL, use `"command": "wsl.exe"` with the arguments `["-e", "bash", "-lc", "cd ~/projects/customer-support-agent && docker compose run --rm -T --no-deps -e RELAY_MCP_CUSTOMER=dana.whitfield@example.com mcp relay mcp serve --transport stdio"]`. `--no-deps` stops `docker compose run` from re-running the `migrate` job on every launch. [docs/mcp.md](docs/mcp.md) has both configurations, a demo script, the Inspector and `make mcp-call`.
 
-I can test the stdio path from WSL, but only you can run Claude Desktop, so you verify this in Phase 2. It also makes a good README demonstration: the policy holds even when a different agent drives the tools.
+The stdio path is covered by tests; the Claude Desktop path is verified by hand. It also makes a good README demonstration: the policy holds even when a different agent drives the tools.
 
 ---
 
@@ -972,7 +972,7 @@ The headline judge number is the share of trials that pass all seven criteria, w
 
 Validation:
 
-- `relay eval label` draws 30 transcripts stratified by category and outcome, shows each one in the terminal, and asks for pass or fail on each criterion. **This has to be you, not me.** It takes about 45 minutes.
+- `relay eval label` draws 30 transcripts stratified by category and outcome, shows each one in the terminal, and asks for pass or fail on each criterion. The labels must come from a human, not a model. It takes about 45 minutes.
 - `relay eval agreement` reports accuracy, Cohen's kappa and a confusion matrix for each criterion. If any criterion is below 0.9 accuracy on clear-cut cases, the rubric is revised and re-checked on fresh transcripts, never tuned on the same 30.
 - Known negatives (an empty reply, "I don't know", a confident answer to a different question) must fail.
 - The judge is run twice on the same 30 transcripts, and we report how often it agrees with itself.
@@ -1112,11 +1112,11 @@ One click on "Create eval scenario" in a conversation's replay sends the transcr
 
 ## 12. Deployment
 
-I recommend one Hetzner Cloud VM running the same Compose stack behind Caddy. Fly.io or Railway would split the stack into separately managed Postgres, Redis and services, each priced on its own, while our compose file runs unchanged on a single VM.
+The target is one Hetzner Cloud VM running the same Compose stack behind Caddy. Fly.io or Railway would split the stack into separately managed Postgres, Redis and services, each priced on its own, while our compose file runs unchanged on a single VM.
 
-- **Host:** 4 GB of RAM, Ubuntu LTS, Docker Engine with Compose. The firewall opens SSH to your IP only, and ports 80 and 443 publicly.
-- **`compose.prod.yaml`** pulls images from GHCR and uses no bind mounts. Caddy provides automatic HTTPS for your domain. Phoenix sits behind Caddy basic auth, or is reachable only through an SSH tunnel.
-- **Release:** CI builds and pushes images when you tag a release. `deploy/deploy.sh` runs `docker compose pull && docker compose up -d` over SSH, then a smoke check.
+- **Host:** 4 GB of RAM, Ubuntu LTS, Docker Engine with Compose. The firewall opens SSH to the operator's IP only, and ports 80 and 443 publicly.
+- **`compose.prod.yaml`** pulls images from GHCR and uses no bind mounts. Caddy provides automatic HTTPS for the domain. Phoenix sits behind Caddy basic auth, or is reachable only through an SSH tunnel.
+- **Release:** CI builds and pushes images when a release is tagged. `deploy/deploy.sh` runs `docker compose pull && docker compose up -d` over SSH, then a smoke check.
 - **Nightly reset:** a systemd timer runs `relay demo reset` at 04:00 UTC. It truncates conversations and demo clones and re-seeds relative to the current time.
 - **Hard daily spend cap:** before each model call, the API reserves the worst-case cost of that call in Redis (estimated input plus `max_tokens` at the output price), and reconciles with the actual usage afterwards. When a reservation would exceed `RELAY_DAILY_SPEND_CAP_USD`, the chat replies with a fixed "the demo is paused until 00:00 UTC" message and makes no model call. As a backstop, the demo uses a dedicated Claude Console workspace with its own spend limit.
 - **Demo mode** (`RELAY_DEMO_MODE=1`): the persona picker, per-visitor clones (D4), a demo operator login, and a banner: "Demo data. Don't enter real personal information. Resets nightly."
@@ -1126,7 +1126,7 @@ I recommend one Hetzner Cloud VM running the same Compose stack behind Caddy. Fl
 
 ## 13. Phases and acceptance criteria
 
-Each phase ends the same way: run every test and linter, fix the failures, then summarize what changed and what you should check, and stop for your review.
+Each phase ends the same way: every test and linter passes, the change is reviewed against the acceptance criteria below, and it is merged before the next phase starts.
 
 ### Phase 0: Foundations
 
@@ -1148,7 +1148,7 @@ Each phase ends the same way: run every test and linter, fix the failures, then 
 - CI passes on a pull request.
 - `docker run --rm relay-backend id -u` prints a non-zero UID.
 
-**You check:** the layout, and whether TypeScript 6, Python 3.14 and Phoenix are fine with you.
+**Review:** the repository layout and the TypeScript 6, Python 3.14 and Phoenix choices.
 
 ### Phase 1: Store domain, policy engine, data
 
@@ -1170,7 +1170,7 @@ Each phase ends the same way: run every test and linter, fix the failures, then 
 - At least 90% test coverage on `domain/`.
 - The retrieval-eval numbers are recorded in ADR-0009, together with the decision they led to.
 
-**You check:** the policy table, and a printed sample of seeded orders with their distribution.
+**Review:** the policy table, and a printed sample of seeded orders with their distribution.
 
 ### Phase 2: MCP server
 
@@ -1192,7 +1192,7 @@ Each phase ends the same way: run every test and linter, fix the failures, then 
   - A commit in the same turn as its preview is rejected.
 - A stdio smoke test spawns the server and calls `get_customer`.
 
-**You check:** the Claude Desktop setup on your machine, which takes about 5 minutes.
+**Manual check:** the Claude Desktop setup, which takes about 5 minutes.
 
 ### Phase 3: Agent runtime
 
@@ -1224,7 +1224,7 @@ Each phase ends the same way: run every test and linter, fix the failures, then 
   - The second model call shows `cache_read_input_tokens > 0`.
   - Running with `prefix_mismatch_behavior: "error"` produces no 400s.
 
-**You check:** a 3-minute `relay chat` session, and the system prompt text.
+**Review:** a 3-minute `relay chat` session, and the system prompt text.
 
 **Delivered** (2026-11-26), with these choices made along the way:
 
@@ -1244,7 +1244,7 @@ Each phase ends the same way: run every test and linter, fix the failures, then 
 - **Escalated conversations:** a customer message gets the fixed acknowledgement without a model call. An approval outcome alone still runs a model turn, so the customer hears the decision.
 - **Output guard:** it allows order numbers the customer typed, so the agent can say "I couldn't find PV-800201 on your account".
 - **Scheduler:** the single-flight lock exists (`RedisLocks`, and `LocalLocks` for the CLI and tests). The scheduler that re-checks the inbox after unlocking arrived in Phase 5.
-- **Not run live by me:** `make smoke` and `relay chat` with a real key, and the OpenAI provider against its API. No API key is configured in this environment.
+- **Not yet run live in CI:** `make smoke` and `relay chat` with a real key, and the OpenAI provider against its API. CI has no API key until Phase 7.
 
 ### Phase 4: Eval harness v1
 
@@ -1267,7 +1267,7 @@ Each phase ends the same way: run every test and linter, fix the failures, then 
 - The report's configuration block is complete.
 - §9.12's estimates are replaced with the measured per-trial cost and time.
 
-**You check:** the 23 scenarios, which I'll list in one Markdown file. Do they cover what matters to you?
+**Review:** the 23 scenarios, listed in `evals/SCENARIOS.md`, for coverage of what matters.
 
 **Delivered** (2026-11-26), with these choices made along the way:
 
@@ -1312,7 +1312,7 @@ Each phase ends the same way: run every test and linter, fix the failures, then 
 - An exported-span test finds no emails, phone numbers or addresses in the attributes of a PII-heavy conversation.
 - Checked by hand: one conversation appears in Phoenix as one session, with turn, model and tool spans.
 
-**You check:** a Phoenix screenshot of one conversation, and the approval flow through a curl script.
+**Review:** a Phoenix screenshot of one conversation, and the approval flow through a curl script.
 
 **Delivered** (2026-11-26), with these choices made along the way:
 
@@ -1336,7 +1336,7 @@ Each phase ends the same way: run every test and linter, fix the failures, then 
 - **Checked on the compose stack:** every service healthy with migration `0003`; demo login, the 403 console guard and the 503 without a key through Caddy; JSON logs with trace and request IDs; request spans arriving in Phoenix's `relay` project.
 - **Without a model key** the API starts, and the chat routes answer 503 with the reason.
 - **Tested** with the scripted model against a real uvicorn server (SSE needs real streaming) and the production MCP app in process: ownership (404), operator guards (401/403), the demo operator's scope, the password login, 429s, 413s, the Origin check, SSE resume, the approval flow end to end, the spend cap, escalation with reply and hand-back, scheduler wake-ups, recovery, expiry, idle close, and span redaction. `approval-flow.sh` was run against a scripted-model server; with Claude it has not run here.
-- **Not done by me:** a Phoenix screenshot and the curl flow with a real key (no API key in this environment).
+- **Still to do:** a Phoenix screenshot and the curl flow with a real key.
 
 ### Phase 6: Frontend
 
@@ -1359,16 +1359,16 @@ Each phase ends the same way: run every test and linter, fix the failures, then 
 - The Playwright smoke test passes in CI.
 - Every flow works from the keyboard and at a width of 375 px.
 
-**You check:** click through the demo flow locally.
+**Manual check:** click through the demo flow locally.
 
 ### Phase 7: Full eval suite and analysis
 
 **Deliverables**
 
 - 52 scenarios and 28 red-team scenarios.
-- The judge (rubric, structured output, known-negative tests), the labeling CLI, and the agreement report on your 30 labels.
+- The judge (rubric, structured output, known-negative tests), the labeling CLI, and the agreement report on the 30 hand labels.
 - The full k=3 run, failure triage, fixes, and a re-run.
-- The effort sweep and, if you approve D2 and D3, the model comparison.
+- The effort sweep and the model comparison (D2, D3).
 - The CI subset with its committed baseline and regression gate.
 - docs/EVALS.md, and the README table generated from the report.
 
@@ -1379,7 +1379,7 @@ Each phase ends the same way: run every test and linter, fix the failures, then 
 - The CI eval job passes on a PR.
 - Every number in the README and in EVALS.md traces back to a committed report and its command.
 
-**You check:** label the 30 transcripts, and read EVALS.md.
+**Manual check:** label the 30 transcripts, and review EVALS.md.
 
 ### Phase 8: Hardening, deployment, docs
 
@@ -1395,9 +1395,9 @@ Each phase ends the same way: run every test and linter, fix the failures, then 
 
 - On a clean runner, clone, copy `.env`, then `make up && make seed && make eval` reproduces the README numbers within their intervals.
 - CI passes.
-- The deployed demo completes a refund, including the operator approval, end to end. You verify this on your VM using my checklist.
+- The deployed demo completes a refund, including the operator approval, end to end, following the deploy checklist.
 
-**You check:** the deploy itself, which needs your Hetzner account and domain.
+**Manual check:** the deploy itself on the production VM and domain.
 
 ---
 
@@ -1409,10 +1409,10 @@ Each phase ends the same way: run every test and linter, fix the failures, then 
 | Simulator errors: it reveals hidden facts, drifts from its goal or gives up early | The agent gets blamed for simulator mistakes. | Fixed first messages, explicit simulator rules, "simulator error" as a triage root cause, spot checks |
 | An accidental history edit breaks preserved thinking. Accounts created on or after 2026-08-31 get 400 errors by default. | Turns fail in production. | Append-only store, the byte-prefix test, `prefix_mismatch_behavior: "error"` in CI and evals |
 | Beta features change: server-side fallbacks, thinking-binding controls, the SDK's OpenTelemetry | Breakage when the SDK is upgraded | Kept inside the Anthropic provider, with a pinned SDK and contract tests |
-| MCP protocol 2026-07-28 is recent, and Claude Desktop may still speak the older one. | Friction with the Desktop integration | `MCPServer` serves both protocol eras. The stdio path is tested, and you verify it in Phase 2. |
-| Claude Desktop on Windows has to launch into WSL. | Setup friction for you | A documented `wsl.exe` variant, tested from the WSL side |
+| MCP protocol 2026-07-28 is recent, and Claude Desktop may still speak the older one. | Friction with the Desktop integration | `MCPServer` serves both protocol eras. The stdio path is tested; the Desktop path is checked by hand in Phase 2. |
+| Claude Desktop on Windows has to launch into WSL. | Setup friction | A documented `wsl.exe` variant, tested from the WSL side |
 | A proxy buffers SSE. | Streaming stalls. | Caddy everywhere, `X-Accel-Buffering: no`, 15-second heartbeats, a streaming test through Caddy |
-| Opus 5.5 always thinks. | Higher latency and cost per turn | The effort sweep, time to first token in every report, and the Sonnet and Haiku comparison if you approve it |
+| Opus 5.5 always thinks. | Higher latency and cost per turn | The effort sweep, time to first token in every report, and a Sonnet and Haiku comparison |
 | Rate limits during evals | Infrastructure errors and slower runs | A concurrency limit, jittered backoff, the error sidecar, resumable runs |
 | The heuristic injection detector raises false positives. | Annoyed customers and needless escalations | A flag never blocks on its own. Precision is measured on the benign set, and the three-flag rule is measured on benign scenarios. |
 | The public demo is abused. | Cost and offensive content | The hard daily cap, rate limits, conversation length limits, the nightly reset |
@@ -1425,7 +1425,7 @@ Each phase ends the same way: run every test and linter, fix the failures, then 
 
 ## 15. Defaults worth a glance
 
-All of these are cheap to change. Tell me if any of them is wrong.
+All of these are cheap to change.
 
 - **Store:** "Pixel & Volt". Order numbers like `PV-123456`. USD, US-only shipping, tax-inclusive prices, store time zone America/New_York.
 - **Policy numbers** (§7): a 30-day return window (15 for refurbished items), a $100.00 auto-approve limit, review after 2 agent-issued refunds in 90 days, 7 days without a scan counts as lost, a 2-day grace period for late delivery.
@@ -1435,7 +1435,7 @@ All of these are cheap to change. Tell me if any of them is wrong.
 - **Retrieval:** vector search on local embeddings, decided by the retrieval eval in Phase 1 (ADR-0009). Full-text and hybrid stay available for comparison.
 - **Turns run in-process**, with no job queue (ADR-0007). The upgrade path is a Redis-backed worker.
 - **Observability:** Phoenix. **Deployment:** Hetzner with Caddy.
-- **Commits:** I make a commit at the end of a phase only if you ask for one.
+- **Commits:** one reviewed pull request per phase.
 - **Optional, not planned:**
   - Postgres row-level security for the MCP server's database role, as defense in depth.
   - Claude API server-side tracing. It needs an organization admin and a public OTLP endpoint.
@@ -1540,12 +1540,9 @@ Selected keys from `.env.example`:
 - Sessions and limits (Phase 5): `RELAY_SESSION_SECRET`, `RELAY_COOKIE_SECURE` (off for the local http stack; refused off in prod), `RELAY_ALLOWED_ORIGINS`, and the limits of §15 (`RELAY_MESSAGES_PER_MINUTE` and so on).
 - Telemetry: `RELAY_TRACE_CONTENT=redacted`, `OTEL_EXPORTER_OTLP_ENDPOINT`.
 
-### E. How we work
+### E. Working rules
 
-This restates your brief, plus two rules of mine.
-
-- We work one phase at a time. At the end of each phase I run the tests and linters, fix failures, summarize what changed and what you should check, and stop.
-- Simple, readable code. I pick sensible defaults and note them here, and ask you only about choices that are expensive to reverse.
+- One phase at a time. Each phase ends with every test and linter passing and a review against its acceptance criteria.
+- Simple, readable code. Defaults are noted here; only choices that are expensive to reverse are called out as decisions (§1).
 - No invented eval numbers. Every number in the docs comes from a real run, cited with its command. Estimates are labeled as estimates.
-- Anything I can't verify myself is listed as yours to check: Claude Desktop, your VM and the hand labels.
-- I commit only when you ask.
+- Anything that cannot be verified automatically is listed as a manual check: Claude Desktop, the production VM and the hand labels.

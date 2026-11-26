@@ -104,6 +104,51 @@ class Settings(BaseSettings):
     sim_model: str = "claude-opus-5-5"
     sim_effort: Literal["low", "medium", "high", "xhigh", "max"] = "low"
 
+    # ---------------------------------------------------------------- the API (Phase 5)
+
+    # Keys session IDs before they are used as Redis keys, so a Redis dump holds no usable
+    # session (32+ characters). Required to serve the API.
+    session_secret: SecretStr | None = Field(default=None, min_length=32)
+    session_ttl_s: int = Field(default=12 * 3600, gt=0)
+    # Secure cookies need HTTPS; the local stack on http://localhost:8080 turns this off.
+    cookie_secure: bool = True
+    # State-changing requests from a browser must come from one of these origins (§11).
+    allowed_origins: tuple[str, ...] = ("http://localhost:8080",)
+    # Every Redis key and channel the API uses starts with this, so tests can't collide.
+    redis_prefix: str = "relay:"
+
+    # Demo mode (§12): the persona picker gives each visitor private copies of the personas
+    # (D4), and a demo operator login sees only that visitor's conversations.
+    demo_mode: bool = False
+    # The operator login outside demo mode: one operator with an Argon2 password hash
+    # (`relay operator hash-password`).
+    operator_email: str = "operator@relay.example"
+    operator_password_hash: SecretStr | None = None
+
+    # Limits (§5.7, §15). Messages count per session; chat requests and logins per client IP.
+    max_body_bytes: int = Field(default=16 * 1024, gt=0)
+    max_message_chars: int = Field(default=2000, gt=0)
+    messages_per_minute: int = Field(default=8, gt=0)
+    messages_per_day: int = Field(default=120, gt=0)
+    chat_requests_per_minute: int = Field(default=30, gt=0)
+    logins_per_minute: int = Field(default=10, gt=0)
+    operator_requests_per_minute: int = Field(default=120, gt=0)
+    # A conversation with no activity for this long is closed (§5.3).
+    idle_close_minutes: int = Field(default=30, gt=0)
+
+    # The hard daily spend cap (§12): a model call starts only if its worst-case cost still fits
+    # under it. None turns it off (the evals and `relay chat` never use it).
+    daily_spend_cap_usd: float | None = Field(default=20.0, ge=0)
+
+    # Tracing (§10). Spans go to OTLP/HTTP at this endpoint (Phoenix: http://phoenix:6006); unset
+    # means no export. `trace_content`: redacted message previews, none at all, or full (local
+    # debugging only).
+    otel_endpoint: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("OTEL_EXPORTER_OTLP_ENDPOINT", "otel_endpoint"),
+    )
+    trace_content: Literal["redacted", "none", "full"] = "redacted"
+
     @field_validator("anthropic_api_key", "openai_api_key", mode="before")
     @classmethod
     def _blank_key_is_no_key(cls, value: object) -> object:
@@ -112,11 +157,27 @@ class Settings(BaseSettings):
             return None
         return value
 
+    @field_validator("operator_password_hash", "otel_endpoint", mode="before")
+    @classmethod
+    def _blank_is_unset(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
     @model_validator(mode="after")
     def _no_dev_secrets_in_prod(self) -> Self:
-        secret = self.mcp_jwt_secret
-        if self.env == "prod" and secret and DEV_SECRET_MARKER in secret.get_secret_value():
-            raise ValueError("RELAY_MCP_JWT_SECRET still has the development value")
+        if self.env != "prod":
+            return self
+        for name, secret in (
+            ("RELAY_MCP_JWT_SECRET", self.mcp_jwt_secret),
+            ("RELAY_SESSION_SECRET", self.session_secret),
+        ):
+            if secret and DEV_SECRET_MARKER in secret.get_secret_value():
+                raise ValueError(f"{name} still has the development value")
+        if not self.cookie_secure:
+            raise ValueError("RELAY_COOKIE_SECURE must stay on in production")
+        if self.trace_content == "full":
+            raise ValueError("RELAY_TRACE_CONTENT=full would export unredacted text")
         return self
 
 

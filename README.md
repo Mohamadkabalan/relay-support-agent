@@ -2,7 +2,7 @@
 
 A customer-support agent for Pixel & Volt, a fictional online electronics store. Customers chat with it to check orders, track packages, change shipping addresses, start returns and request refunds. The agent acts only through tools on an MCP server, risky actions wait for a human operator, and an eval suite measures the whole system.
 
-> **Status: Phase 4 of 8 (eval harness).** The store, its policy engine, its seed data, the nine MCP tools and the agent work, and you can chat with it in a terminal. The eval harness and its first 23 scenarios are in place and pass their self-tests. No eval run with the model has happened yet, so there are no eval numbers. There is no web UI or HTTP API yet. [PLAN.md](PLAN.md) has the design and the roadmap; this README becomes the full project README in Phase 8.
+> **Status: Phase 5 of 8 (HTTP API, approvals, streaming, tracing).** The store, its policy engine, its seed data, the nine MCP tools and the agent work. You can chat with the agent in a terminal or through the HTTP API, approve refunds as an operator, and follow every turn in Phoenix. The eval harness and its first 23 scenarios pass their self-tests. No eval run with the model has happened yet, so there are no eval numbers. There is no web UI yet (Phase 6). [PLAN.md](PLAN.md) has the design and the roadmap; this README becomes the full project README in Phase 8.
 
 ## Run it locally
 
@@ -50,6 +50,16 @@ make smoke                                        # one live refund conversation
 
 The transcript is append-only and replayed byte for byte ([ADR-0005](docs/adr/0005-append-only-transcript.md)). The system prompt is in [backend/src/relay/agent/prompts/v1.md](backend/src/relay/agent/prompts/v1.md).
 
+## The HTTP API
+
+The API serves the chat and the operator console behind Caddy at http://localhost:8080/api (schema at `/api/docs`). In demo mode, the default in `.env.example`, each browser gets private copies of the six demo personas, and a demo operator login sees only that browser's conversations. With `ANTHROPIC_API_KEY` in `.env`:
+
+```bash
+make approval-flow   # with curl: Dana's $349.99 refund, the operator's approval, the agent's follow-up
+```
+
+Replies stream over server-sent events that resume after a reconnect. Turns run under a per-conversation lock, so a message sent mid-turn gets its own turn next ([ADR-0007](docs/adr/0007-turns-in-the-api-process.md)). A daily spend cap stops model calls before they start. Every turn is a trace in Phoenix (http://localhost:6006), grouped by conversation and redacted before it leaves the process ([ADR-0010](docs/adr/0010-phoenix-for-tracing.md)). [docs/api.md](docs/api.md) lists the routes, the events and the limits.
+
 ## Evals
 
 Each trial is a simulated conversation: a model plays the customer from a short brief, the real agent answers through the real MCP tools, and an operator stub decides any approval. The trial runs on its own copy of a seeded template database. It passes when the database changes are exactly what the scenario expects, its conversation checks pass, and no violation occurred: a write the policy forbids, another customer's data, or a prompt leak. [evals/SCENARIOS.md](evals/SCENARIOS.md) lists the 23 scenarios, 8 of them red team. [ADR-0008](docs/adr/0008-eval-trials-on-cloned-databases.md) explains the setup.
@@ -83,11 +93,13 @@ make help    # every target
 backend/    Python package `relay`: API (FastAPI), MCP server, CLI, tests
             relay/domain: policy engine (policy.yaml) and the store services
             relay/mcp_server: the nine tools, identity, strict schemas
-            relay/agent: turn loop, transcript store, model providers, prompt, guardrails
+            relay/agent: turn loop, scheduler, transcript store, providers, prompt, guardrails
+            relay/api: sessions, rate limits, chat, console, SSE; relay/telemetry: traces, logs
             relay/evals: eval harness (template DB, simulator, graders, runner, reports)
             relay/db: models and migrations; relay/seed: demo data; relay/kb: help center
 frontend/   Next.js app: chat widget and operator console (Phase 6)
 deploy/     Caddy and Postgres configuration
-docs/       mcp.md (Claude Desktop, Inspector); adr/ (architecture decision records)
+docs/       mcp.md (Claude Desktop, Inspector), api.md (routes, events, limits), examples/,
+            adr/ (architecture decision records)
 evals/      Scenarios (scenarios/, redteam/, SCENARIOS.md), run reports, retrieval eval
 ```

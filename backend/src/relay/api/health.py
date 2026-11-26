@@ -20,7 +20,7 @@ from relay.config import Settings
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(tags=["health"])
+router = APIRouter(prefix="/api", tags=["health"])
 
 CheckResult = Literal["ok", "error"]
 

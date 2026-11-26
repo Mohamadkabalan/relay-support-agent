@@ -1,6 +1,6 @@
 # Relay: implementation plan
 
-> **Status:** approved on 2026-11-22, with decisions D1–D4 accepted as recommended. Phases 0 to 4 are done; Phase 4 is awaiting review. Its pilot run needs an API key and has not run yet.
+> **Status:** approved on 2026-11-22, with decisions D1–D4 accepted as recommended. Phases 0 to 5 are done; Phase 5 is awaiting review. The Phase 4 pilot run needs an API key and has not run yet.
 > Every version, model ID and API behavior in this plan was checked on 2026-11-22 against PyPI, npm, Docker Hub, the Anthropic docs (platform.claude.com/docs) and the MCP Python SDK docs (py.sdk.modelcontextprotocol.io). The cost figures in §9.12 are pre-implementation estimates and are labeled as such. There are no eval results yet, and none appear in this document.
 
 ## Contents
@@ -87,7 +87,8 @@ Your proposed stack stands, with the changes listed after the table.
 | Cache, locks, pub/sub | Redis | 8.10 |
 | Local embeddings | fastembed with `BAAI/bge-small-en-v1.5` | 0.9.1 |
 | Seed data, config, vectors | Faker, PyYAML, pgvector (Python) | 40.63.0, 6.0.4, 0.5.1 |
-| Tracing | OpenTelemetry SDK, Arize Phoenix (self-hosted) | 1.45.2, image `arizephoenix/phoenix:version-22.0.1-nonroot` |
+| Tracing | OpenTelemetry SDK and OTLP/HTTP exporter, Arize Phoenix (self-hosted) | 1.45.2 and 1.45.2 (checked on PyPI 2026-11-26), image `arizephoenix/phoenix:version-22.0.1-nonroot` |
+| Logs, operator password | structlog, argon2-cffi | 26.1.0, 25.1.0 (added in Phase 5; checked on PyPI 2026-11-26) |
 | Lint, types, tests | ruff, mypy (strict), pytest, pytest-asyncio, Hypothesis, pytest-cov | 0.17.6, 2.4.1, 9.2.0, 1.5.0, 6.170.17, 7.1.0 |
 | Frontend | Next.js, React, Tailwind CSS, TypeScript, ESLint | 16.4.6, 19.3.1, 4.3.5, **6.0.3**, **9.39.5** |
 | Frontend libraries | TanStack Query, Recharts, openapi-typescript with openapi-fetch, Playwright | 5.108, 3.11, 7.13 with 0.17, 1.65.1 |
@@ -263,6 +264,7 @@ stateDiagram-v2
 | `budget_exhausted` | Conversation token budget used up, or 90-second turn deadline reached | The same handoff message | An escalation is created. |
 | `refused` | `stop_reason: "refusal"`, still refused after the server-side fallback | A polite decline | Flagged for review |
 | `failed` | API error after the SDK's retries, output truncated twice, or an empty response | An apology and an invitation to try again | Flagged. The customer retries by sending the message again (changed in Phase 3: the runtime never re-runs a turn on the same transcript). |
+| `paused` | The daily spend cap: the next model call's worst case would pass it (added in Phase 5) | "Paused until 00:00 UTC" | No model call was made. |
 
 ### 5.3 Conversation and approval lifecycles
 
@@ -1241,7 +1243,7 @@ Each phase ends the same way: run every test and linter, fix the failures, then 
 - **Retry:** there is no separate retry of a failed turn. The customer sends the message again (§5.2, ADR-0005).
 - **Escalated conversations:** a customer message gets the fixed acknowledgement without a model call. An approval outcome alone still runs a model turn, so the customer hears the decision.
 - **Output guard:** it allows order numbers the customer typed, so the agent can say "I couldn't find PV-800201 on your account".
-- **Scheduler:** the single-flight lock exists (`RedisLocks`, and `LocalLocks` for the CLI and tests). The scheduler that re-checks the inbox after unlocking is Phase 5.
+- **Scheduler:** the single-flight lock exists (`RedisLocks`, and `LocalLocks` for the CLI and tests). The scheduler that re-checks the inbox after unlocking arrived in Phase 5.
 - **Not run live by me:** `make smoke` and `relay chat` with a real key, and the OpenAI provider against its API. No API key is configured in this environment.
 
 ### Phase 4: Eval harness v1
@@ -1311,6 +1313,30 @@ Each phase ends the same way: run every test and linter, fix the failures, then 
 - Checked by hand: one conversation appears in Phoenix as one session, with turn, model and tool spans.
 
 **You check:** a Phoenix screenshot of one conversation, and the approval flow through a curl script.
+
+**Delivered** (2026-11-26), with these choices made along the way:
+
+- **Code and records:**
+  - `backend/src/relay/api/`: `app`, `services`, `sessions`, `deps` (auth and rate-limit dependencies), `ratelimit`, `events` (pub/sub and SSE), `middleware`, and `routes/` (`auth`, `chat`, `console`).
+  - `backend/src/relay/agent/`: `scheduler`, `spend`, `events`; the loop gained spans, the spend cap, the `paused` state, orphan recovery and relayed operator replies.
+  - `backend/src/relay/telemetry/`: `tracing` (with `RedactingExporter`), `redaction`, `logging`.
+  - `backend/src/relay/seed/clones.py`: per-visitor persona copies.
+  - Migration `0003`: the `paused` turn status and `demo_order_number_seq`.
+  - ADR-0007 and ADR-0010, [docs/api.md](docs/api.md) and [docs/examples/approval-flow.sh](docs/examples/approval-flow.sh) (`make approval-flow`).
+- **Persona clones (D4):** a clone is built fresh from the persona builder, dated relative to now. It gets the email `<name>+<visitor>@example.com` and order numbers PV-801000 to PV-899999 from a sequence. The full seed is unchanged byte for byte (checked against the Phase 4 builder). Outside demo mode the persona login signs in as the seeded persona.
+- **Sessions:** one session can hold a customer and an operator at once, since the demo widget and console share a browser. The demo operator sees only its visitor's customers; each visitor gets its own operator row, so audit rows say which demo operator decided. The cookie is scoped to `/api`. Redis keys are HMACs of the token (`RELAY_SESSION_SECRET`).
+- **Origin check:** a state-changing request with an `Origin` header outside `RELAY_ALLOWED_ORIGINS` gets 403. Requests without one (curl) pass; SameSite=Lax already keeps other sites' forms from carrying the cookie.
+- **Rate limits** are fixed windows in Redis. Messages count per browser (visitor), so signing in again doesn't reset them.
+- **Operator replies** (added): an escalated conversation tells the customer "they'll reply here", so operators can write in it. A reply is a notice the model never sees as its own words. The next turn, whatever its kind, relays it as a trusted note, so a handed-back agent knows what was said. Resolving an escalation closes the conversation or hands it back (`hand_back`), audited either way.
+- **Approval decisions** commit the decision, its execution, its audit row, the inbox entry and the `approval.resolved` event in one transaction; the event is published and the resume turn kicked after the commit.
+- **Recovery:** a turn left `running` with a free lock is orphaned. If it appended nothing, its inputs go back to the inbox. If it ended on a final reply, it is closed as completed. Otherwise unanswered tool calls get interrupted results and the customer gets the failure apology. The sweep runs at startup and every minute, together with approval expiry (which now resumes the conversation) and idle close (30 minutes, skipped while an approval or a message is pending).
+- **Spend cap:** the worst case prices the whole request at the full input price (characters / 3, an overestimate) plus `max_tokens` of output; an unpriced model is priced like the dearest. A failed call keeps its reservation. Days are UTC days. The evals and `relay chat` run without a cap.
+- **Tracing:** Phoenix gets OpenInference span kinds and `session.id` on every span of ours; each turn is a new trace linked to the HTTP request that started it. Trace IDs land on turn rows and audit rows (the MCP server takes them from the propagated context). Database spans are not instrumented. Redaction also masks unit numbers and state-plus-ZIP codes; names in free text are not detected. HTTP spans are FastAPI's own (0.165 traces requests natively), without its per-dependency spans and with the health probes excluded.
+- **Phoenix authentication:** Phoenix 22 turns auth on for any non-loopback bind and then refused our spans (401), found when running the stack. The local compose sets `PHOENIX_ENABLE_AUTH=false` (Phoenix is published on 127.0.0.1 only); Phase 8 turns auth on and passes an API key in `OTEL_EXPORTER_OTLP_HEADERS`.
+- **Checked on the compose stack:** every service healthy with migration `0003`; demo login, the 403 console guard and the 503 without a key through Caddy; JSON logs with trace and request IDs; request spans arriving in Phoenix's `relay` project.
+- **Without a model key** the API starts, and the chat routes answer 503 with the reason.
+- **Tested** with the scripted model against a real uvicorn server (SSE needs real streaming) and the production MCP app in process: ownership (404), operator guards (401/403), the demo operator's scope, the password login, 429s, 413s, the Origin check, SSE resume, the approval flow end to end, the spend cap, escalation with reply and hand-back, scheduler wake-ups, recovery, expiry, idle close, and span redaction. `approval-flow.sh` was run against a scripted-model server; with Claude it has not run here.
+- **Not done by me:** a Phoenix screenshot and the curl flow with a real key (no API key in this environment).
 
 ### Phase 6: Frontend
 
@@ -1439,10 +1465,11 @@ All of these are cheap to change. Tell me if any of them is wrong.
 │   │   ├── mcp_server/      server, runtime (errors, transactions), identity, tools, schemas
 │   │   ├── agent/           loop, store, tools (MCP client), manifest, locks, chat, smoke,
 │   │   │                    prompts/, guardrails/, providers/ (base, anthropic, openai,
-│   │   │                    scripted); the scheduler arrives in Phase 5
-│   │   ├── api/             app, routes (auth, chat, console, metrics), sse, sessions, ratelimit, spend
+│   │   │                    scripted), scheduler, spend, events
+│   │   ├── api/             app, services, sessions, deps, ratelimit, events, middleware,
+│   │   │                    routes/ (auth, chat, console); metrics arrive in Phase 6
 │   │   ├── telemetry/       tracing, redaction, logging
-│   │   ├── seed/            generate, catalog, personas, verify
+│   │   ├── seed/            generate, catalog, personas, clones, verify
 │   │   └── evals/           scenario, databases, fixtures, snapshot, simulator, trial,
 │   │                        grading, runner, metrics, report, selftest, harness, cli;
 │   │                        judge, label_cli and triage arrive in Phase 7
@@ -1456,7 +1483,7 @@ All of these are cheap to change. Tell me if any of them is wrong.
 │   ├── baseline.json
 │   └── reports/             <run>/report.md, report.json
 ├── deploy/                  Caddyfile, Caddyfile.dev, systemd/, deploy.sh
-└── docs/                    mcp.md, AGENT_DESIGN.md, EVALS.md, DEPLOY.md, SECURITY.md, adr/
+└── docs/                    mcp.md, api.md, examples/, AGENT_DESIGN.md, EVALS.md, DEPLOY.md, SECURITY.md, adr/
 ```
 
 ### B. Architecture decision records
@@ -1496,6 +1523,7 @@ ADRs are written during the phase in which each decision lands.
 | `make smoke` | A live end-to-end refund conversation with Claude, checked (needs `ANTHROPIC_API_KEY`; a few cents) |
 | `make mcp-inspect` | Opens the MCP Inspector on the stdio server, as `MCP_CUSTOMER` (default Dana) |
 | `make mcp-call` | Calls one tool over HTTP with a fresh turn token: `make mcp-call TOOL=get_order ARGS='{...}'` |
+| `make approval-flow` | The approval flow through the HTTP API with curl (needs the stack and `ANTHROPIC_API_KEY`) |
 | `make demo-reset` | Does what the nightly timer does |
 
 ### D. Configuration
@@ -1508,7 +1536,8 @@ Selected keys from `.env.example`:
 - Models: `RELAY_AGENT_MODEL=claude-opus-5-5`, `RELAY_AGENT_EFFORT=medium`, `RELAY_SIM_MODEL=claude-opus-5-5`, `RELAY_SIM_EFFORT=low`, `RELAY_JUDGE_MODEL=claude-sonnet-5-5` (Phase 7).
 - Infrastructure: `DATABASE_URL`, `REDIS_URL`, `RELAY_MCP_URL`, `RELAY_MCP_JWT_SECRET` (32+ characters; values containing `dev-only` are refused when `RELAY_ENV=prod`), `RELAY_SESSION_SECRET`.
 - MCP server: `RELAY_MCP_CUSTOMER` (the customer a stdio server acts for), `RELAY_MCP_ALLOWED_HOSTS`, `RELAY_MCP_MAX_REQUEST_BYTES` (64 KiB).
-- Operator and demo: `RELAY_OPERATOR_PASSWORD_HASH`, `RELAY_DEMO_MODE`, `RELAY_DAILY_SPEND_CAP_USD`, `RELAY_STORE_NAME`.
+- Operator and demo: `RELAY_OPERATOR_EMAIL`, `RELAY_OPERATOR_PASSWORD_HASH` (Argon2, from `relay operator hash-password`; single-quoted in `.env`), `RELAY_DEMO_MODE`, `RELAY_DAILY_SPEND_CAP_USD` (default 20), `RELAY_STORE_NAME`.
+- Sessions and limits (Phase 5): `RELAY_SESSION_SECRET`, `RELAY_COOKIE_SECURE` (off for the local http stack; refused off in prod), `RELAY_ALLOWED_ORIGINS`, and the limits of §15 (`RELAY_MESSAGES_PER_MINUTE` and so on).
 - Telemetry: `RELAY_TRACE_CONTENT=redacted`, `OTEL_EXPORTER_OTLP_ENDPOINT`.
 
 ### E. How we work

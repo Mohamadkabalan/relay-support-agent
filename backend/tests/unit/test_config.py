@@ -1,5 +1,6 @@
 import pytest
 from pydantic import ValidationError
+from tests.conftest import make_settings
 
 from relay.config import Settings
 
@@ -76,3 +77,22 @@ def test_a_blank_model_key_means_no_key() -> None:
     key = make_settings(anthropic_api_key="sk-ant-test").anthropic_api_key
     assert key is not None
     assert key.get_secret_value() == "sk-ant-test"
+
+
+@pytest.mark.parametrize(
+    ("override", "message"),
+    [
+        ({"session_secret": "dev-only-session-secret-0123456789abcdef"}, "RELAY_SESSION_SECRET"),
+        ({"cookie_secure": False}, "RELAY_COOKIE_SECURE"),
+        ({"trace_content": "full"}, "RELAY_TRACE_CONTENT"),
+    ],
+)
+def test_production_refuses_development_settings(override: dict[str, object], message: str) -> None:
+    with pytest.raises(ValidationError, match=message):
+        make_settings(env="prod", **override)
+
+
+def test_blank_optional_values_mean_unset() -> None:
+    settings = make_settings(operator_password_hash=" ", otel_endpoint="")
+    assert settings.operator_password_hash is None
+    assert settings.otel_endpoint is None

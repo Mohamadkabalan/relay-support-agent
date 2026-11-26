@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from relay import turn_tokens
 from relay.db.models import Customer
 from relay.domain.scope import CustomerScope
+from relay.telemetry.tracing import current_trace_id
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,8 @@ class TokenIdentity:
             customer_id=uuid.UUID(token.subject),
             conversation_id=uuid.UUID(token.claims["cid"]),
             turn_seq=int(token.claims["tseq"]),
+            # The MCP SDK continues the agent's trace, so audit rows link to the turn's trace.
+            trace_id=current_trace_id(),
         )
 
 

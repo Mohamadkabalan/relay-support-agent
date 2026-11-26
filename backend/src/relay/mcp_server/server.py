@@ -155,6 +155,17 @@ def create_http_app(
     )
 
 
+def serve_http_app() -> Starlette:
+    """The uvicorn factory: JSON logs and tracing for this process, then the app."""
+    from relay.telemetry.logging import configure_logging
+    from relay.telemetry.tracing import setup_tracing
+
+    settings = get_settings()
+    configure_logging(settings)
+    setup_tracing(settings, "relay-mcp")
+    return create_http_app(settings)
+
+
 async def serve_stdio(settings: Settings) -> None:
     """Serve over stdin/stdout for Claude Desktop, acting for `RELAY_MCP_CUSTOMER`."""
     if not settings.mcp_customer:

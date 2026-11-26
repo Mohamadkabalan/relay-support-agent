@@ -1,7 +1,7 @@
 """The `relay` command-line tool.
 
-Commands so far: `api serve`, `mcp serve|token|call`, `chat`, `smoke`, `eval`, `db`, `seed`,
-`kb` and `version`. Phase 8 adds `demo` (PLAN.md §13).
+Commands so far: `api serve`, `mcp serve|token|call`, `operator hash-password`, `chat`, `smoke`,
+`eval`, `db`, `seed`, `kb` and `version`. Phase 8 adds `demo` (PLAN.md §13).
 """
 
 import asyncio
@@ -36,11 +36,13 @@ api_app = typer.Typer(help="The HTTP API.", no_args_is_help=True)
 mcp_app = typer.Typer(help="The MCP server.", no_args_is_help=True)
 db_app = typer.Typer(help="Database migrations.", no_args_is_help=True)
 kb_app = typer.Typer(help="The help-center knowledge base.", no_args_is_help=True)
+operator_app = typer.Typer(help="The operator login.", no_args_is_help=True)
 app.add_typer(api_app, name="api")
 app.add_typer(mcp_app, name="mcp")
 app.add_typer(db_app, name="db")
 app.add_typer(kb_app, name="kb")
 app.add_typer(eval_app, name="eval")
+app.add_typer(operator_app, name="operator")
 
 Host = Annotated[str, typer.Option(help="Interface to bind. Containers pass 0.0.0.0.")]
 Reload = Annotated[bool, typer.Option(help="Restart when source files change (development).")]
@@ -62,7 +64,7 @@ def api_serve(host: Host = "127.0.0.1", port: int = 8000, reload: Reload = False
     """Run the FastAPI app with uvicorn."""
     settings = get_settings()
     uvicorn.run(
-        "relay.api.app:create_app",
+        "relay.api.app:serve_app",
         factory=True,
         host=host,
         port=port,
@@ -70,7 +72,23 @@ def api_serve(host: Host = "127.0.0.1", port: int = 8000, reload: Reload = False
         proxy_headers=True,
         forwarded_allow_ips=settings.forwarded_allow_ips,
         log_level=settings.log_level.lower(),
+        log_config=None,  # serve_app routes uvicorn's logs through our JSON logging
     )
+
+
+@operator_app.command("hash-password")
+def operator_hash_password() -> None:
+    """Print an Argon2 hash for RELAY_OPERATOR_PASSWORD_HASH (the password is asked, not echoed).
+
+    The hash contains `$` signs: put it in .env inside single quotes so Docker Compose keeps it.
+    """
+    from argon2 import PasswordHasher
+
+    password = typer.prompt("Operator password", hide_input=True, confirmation_prompt=True)
+    if len(password) < 12:
+        typer.echo("Use at least 12 characters.", err=True)
+        raise typer.Exit(1)
+    typer.echo(PasswordHasher().hash(password))
 
 
 @mcp_app.command("serve")
@@ -95,12 +113,13 @@ def mcp_serve(
             raise typer.Exit(1) from error
         return
     uvicorn.run(
-        "relay.mcp_server.server:create_http_app",
+        "relay.mcp_server.server:serve_http_app",
         factory=True,
         host=host,
         port=port,
         reload=reload,
         log_level=settings.log_level.lower(),
+        log_config=None,  # serve_http_app routes uvicorn's logs through our JSON logging
     )
 
 

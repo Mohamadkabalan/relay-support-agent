@@ -136,6 +136,13 @@ jobs:
               raise SystemExit(0 if error.code == 401 else f'expected 401, got {error.code}')
           raise SystemExit('expected 401 without a token')
           "
+      - name: The API signs in a demo persona and keeps customers out of the console
+        run: |
+          jar=$(mktemp)
+          api() { curl --silent --show-error -b "$jar" -c "$jar" -H 'Origin: http://localhost:8080' -H 'Content-Type: application/json' "$@"; }
+          api --fail -X POST http://127.0.0.1:8080/api/auth/demo -d '{"persona": "dana"}' | grep -q '"name":"Dana Whitfield"'
+          test "$(api -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/console/approvals)" = 403
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/console/approvals)" = 401
       - name: Service status and logs
         if: failure()
         run: docker compose ps && docker compose logs --no-color

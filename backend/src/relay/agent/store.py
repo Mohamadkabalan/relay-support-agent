@@ -10,12 +10,15 @@ inserted, and a trigger rejects UPDATE and DELETE on `messages`.
 """
 
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from relay.agent.events import AgentEvent
 from relay.agent.providers.base import ModelResponse
 from relay.agent.tools import ExecutedCall
 from relay.clock import Clock
@@ -45,6 +48,9 @@ from relay.domain.results import ApprovalView, EscalationResult
 from relay.domain.scope import Deps, SystemScope
 
 RUNTIME_JOB = "agent-runtime"  # the actor recorded when the runtime itself escalates
+
+# A message an operator typed into an escalated conversation: a notice with this reason.
+OPERATOR_REPLY = "operator"
 
 
 class InboxFullError(Exception):
@@ -203,29 +209,45 @@ class ConversationStore:
                 )
             )
 
-    async def enqueue_approval(self, conversation_id: uuid.UUID, approval: ApprovalView) -> None:
-        """An operator decided: queue the outcome for a resume turn (§5.9)."""
-        payload = approval.model_dump(mode="json")
-        async with self.sessionmaker() as session, session.begin():
-            session.add(
+    async def enqueue_approval(
+        self,
+        conversation_id: uuid.UUID,
+        approval: ApprovalView,
+        session: AsyncSession | None = None,
+    ) -> AgentEvent:
+        """An operator decided: queue the outcome for a resume turn (§5.9).
+
+        Pass the session that resolved the approval, so the decision and the resume it schedules
+        commit together. Returns the stored `approval.resolved` event, to publish after commit.
+        """
+        async with self._transaction(session) as db:
+            db.add(
                 InboxItem(
                     conversation_id=conversation_id,
                     kind=InboxKind.APPROVAL_RESOLVED,
-                    payload=payload,
+                    payload=approval.model_dump(mode="json"),
                     created_at=self.clock.now(),
                 )
             )
-            session.add(
-                self._event(
-                    conversation_id,
-                    None,
-                    "approval.resolved",
-                    {
-                        "approval_number": approval.approval_number,
-                        "decision": approval.status.value,
-                    },
-                )
+            event = self._event(
+                conversation_id,
+                None,
+                "approval.resolved",
+                {"approval_number": approval.approval_number, "decision": approval.status.value},
             )
+            db.add(event)
+            await db.flush()
+        return AgentEvent(conversation_id, event.type, event.payload, event.id)
+
+    async def has_waiting(self, conversation_id: uuid.UUID) -> bool:
+        """Whether anything is in the inbox that no turn has claimed yet."""
+        async with self.sessionmaker() as session:
+            found = await session.scalar(
+                select(InboxItem.id)
+                .where(InboxItem.conversation_id == conversation_id, InboxItem.turn_id.is_(None))
+                .limit(1)
+            )
+        return found is not None
 
     async def start_turn(self, conversation_id: uuid.UUID) -> StartedTurn | None:
         """Claim everything waiting in the inbox and open a turn for it. None if it was empty."""
@@ -283,6 +305,7 @@ class ConversationStore:
         latency_ms: int,
         error: str | None = None,
         retracted: bool = False,
+        trace_id: str | None = None,
     ) -> None:
         async with self.sessionmaker() as session, session.begin():
             await session.execute(
@@ -293,9 +316,26 @@ class ConversationStore:
                     latency_ms=latency_ms,
                     error=error,
                     retracted=retracted,
+                    trace_id=trace_id,
                     finished_at=self.clock.now(),
                 )
             )
+
+    async def running_turns(self) -> list[Turn]:
+        """Turns not finished yet: running now, or orphaned by a process that stopped."""
+        async with self.sessionmaker() as session:
+            rows = await session.scalars(
+                select(Turn).where(Turn.status == TurnStatus.RUNNING).order_by(Turn.started_at)
+            )
+            return list(rows)
+
+    async def release_inbox(self, turn_id: uuid.UUID) -> int:
+        """Give a turn's claimed inputs back to the inbox, for a turn that never used them."""
+        async with self.sessionmaker() as session, session.begin():
+            result = await session.execute(
+                update(InboxItem).where(InboxItem.turn_id == turn_id).values(turn_id=None)
+            )
+        return int(getattr(result, "rowcount", 0) or 0)
 
     async def last_turn(self, conversation_id: uuid.UUID) -> Turn | None:
         async with self.sessionmaker() as session:
@@ -361,6 +401,51 @@ class ConversationStore:
                 .order_by(Message.seq)
             )
             return list(rows)
+
+    async def turn_messages(self, turn_id: uuid.UUID) -> list[Message]:
+        async with self.sessionmaker() as session:
+            rows = await session.scalars(
+                select(Message).where(Message.turn_id == turn_id).order_by(Message.seq)
+            )
+            return list(rows)
+
+    async def last_model_message(self, conversation_id: uuid.UUID) -> Message | None:
+        """The latest entry the model sees (notices have no payload and don't count)."""
+        async with self.sessionmaker() as session:
+            return await session.scalar(
+                select(Message)
+                .where(Message.conversation_id == conversation_id, Message.raw.is_not(None))
+                .order_by(Message.seq.desc())
+                .limit(1)
+            )
+
+    async def operator_replies_since_last_turn(self, conversation_id: uuid.UUID) -> list[str]:
+        """What operators told the customer since the last turn, so the next turn can relay it.
+
+        Operator replies are notices written outside any turn; everything a turn appends has its
+        turn ID. Each reply is therefore relayed exactly once, by the first turn after it.
+        """
+        async with self.sessionmaker() as session:
+            last_turn_seq = await session.scalar(
+                select(func.max(Message.seq)).where(
+                    Message.conversation_id == conversation_id, Message.turn_id.is_not(None)
+                )
+            )
+            rows = await session.scalars(
+                select(Message.content)
+                .where(
+                    Message.conversation_id == conversation_id,
+                    Message.kind == MessageKind.NOTICE,
+                    Message.turn_id.is_(None),
+                    Message.seq > (last_turn_seq or 0),
+                )
+                .order_by(Message.seq)
+            )
+            return [
+                str(content.get("text", ""))
+                for content in rows
+                if content.get("reason") == OPERATOR_REPLY
+            ]
 
     async def customer_texts(self, conversation_id: uuid.UUID) -> list[str]:
         async with self.sessionmaker() as session:
@@ -473,18 +558,31 @@ class ConversationStore:
         turn_id: uuid.UUID | None,
         type_: str,
         payload: dict[str, Any],
-    ) -> None:
-        async with self.sessionmaker() as session, session.begin():
-            session.add(self._event(conversation_id, turn_id, type_, payload))
+        session: AsyncSession | None = None,
+    ) -> AgentEvent:
+        """Store an event and return it with its ID, ready to publish."""
+        async with self._transaction(session) as db:
+            event = self._event(conversation_id, turn_id, type_, payload)
+            db.add(event)
+            await db.flush()
+        return AgentEvent(conversation_id, type_, payload, event.id)
 
-    async def events(self, conversation_id: uuid.UUID) -> list[ConversationEvent]:
+    async def events(
+        self, conversation_id: uuid.UUID, after: int = 0, limit: int | None = None
+    ) -> list[ConversationEvent]:
+        """Stored events in order, optionally only those after a given event ID."""
         async with self.sessionmaker() as session:
-            rows = await session.scalars(
+            query = (
                 select(ConversationEvent)
-                .where(ConversationEvent.conversation_id == conversation_id)
+                .where(
+                    ConversationEvent.conversation_id == conversation_id,
+                    ConversationEvent.id > after,
+                )
                 .order_by(ConversationEvent.id)
             )
-            return list(rows)
+            if limit is not None:
+                query = query.limit(limit)
+            return list(await session.scalars(query))
 
     def _event(
         self,
@@ -513,6 +611,15 @@ class ConversationStore:
                 select(Order.number).where(Order.customer_id == customer_id)
             )
             return set(rows)
+
+    @asynccontextmanager
+    async def _transaction(self, session: AsyncSession | None) -> AsyncIterator[AsyncSession]:
+        """The caller's session (its transaction commits the work), or a new transaction."""
+        if session is not None:
+            yield session
+            return
+        async with self.sessionmaker() as own, own.begin():
+            yield own
 
     async def _update(self, conversation_id: uuid.UUID, **values: Any) -> None:
         async with self.sessionmaker() as session, session.begin():

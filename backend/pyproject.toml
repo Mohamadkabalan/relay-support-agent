@@ -6,6 +6,7 @@ requires-python = ">=3.14,<3.15"
 dependencies = [
     "alembic>=1.20.1",
     "anthropic>=2.14.0",
+    "argon2-cffi>=25.1.0",
     "asyncpg>=0.32",
     "faker>=40.63",
     "fastapi>=0.165",
@@ -13,6 +14,8 @@ dependencies = [
     "httpx2>=2.16.2",
     "mcp>=2.3,<3",
     "openai>=3.60.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.45.2",
+    "opentelemetry-sdk>=1.45.2",
     "pgvector>=0.5.1",
     "pydantic>=2.14",
     "pydantic-settings>=2.16",
@@ -20,6 +23,7 @@ dependencies = [
     "pyyaml>=6.0.4",
     "redis>=8.1",
     "sqlalchemy[asyncio]>=2.1.9",
+    "structlog>=26.1.0",
     "typer>=0.29",
     "uvicorn[standard]>=0.54",
 ]

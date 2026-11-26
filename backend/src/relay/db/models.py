@@ -71,6 +71,11 @@ RMA_NUMBERS = Sequence("rma_number_seq", start=100001, metadata=Base.metadata)
 REFUND_NUMBERS = Sequence("refund_number_seq", start=10001, metadata=Base.metadata)
 APPROVAL_NUMBERS = Sequence("approval_number_seq", start=10001, metadata=Base.metadata)
 ESCALATION_NUMBERS = Sequence("escalation_number_seq", start=10001, metadata=Base.metadata)
+# Orders of the per-visitor demo persona clones (D4): PV-801000 to PV-899999. The seed's random
+# orders use PV-100000 to PV-799999, the personas PV-8001xx to PV-8006xx, eval fixtures PV-9xxxxx.
+DEMO_ORDER_NUMBERS = Sequence(
+    "demo_order_number_seq", start=801000, maxvalue=899999, metadata=Base.metadata
+)
 
 
 def one_of(column: str, enum: type[StrEnum]) -> CheckConstraint:

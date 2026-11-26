@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
+from opentelemetry import trace
 from pydantic import BaseModel
 
 from relay.db.models import ActionPreview, Approval, Order
@@ -28,6 +29,8 @@ from relay.domain.results import (
     WriteOutcome,
 )
 from relay.domain.scope import CustomerScope, Deps, Scope
+
+tracer = trace.get_tracer("relay.domain")
 
 
 class ActionArgs(BaseModel):
@@ -98,7 +101,7 @@ async def preview_or_commit[A: ActionArgs, C: CompletedResult](
     # Always decide on fresh facts: the order may have changed since the preview.
     now = deps.clock.now()
     facts = await facts_for(session, order, deps.policy, now)
-    plan = handler.plan(args, order, facts, deps.policy, now)
+    plan = traced_plan(handler, args, order, facts, deps.policy, now)
     decision = plan.decision
 
     if decision.outcome is Outcome.DENY:
@@ -136,6 +139,29 @@ async def preview_or_commit[A: ActionArgs, C: CompletedResult](
     previews.mark_committed(preview, outcome, result.model_dump(mode="json"), now)
     await session.flush()
     return result
+
+
+def traced_plan[A: ActionArgs, C: CompletedResult](
+    handler: ActionHandler[A, C],
+    args: A,
+    order: Order,
+    facts: Facts,
+    policy: PolicyConfig,
+    now: datetime,
+) -> Plan:
+    """`handler.plan` inside a `relay.policy.evaluate` span with the matched rule IDs (§10)."""
+    with tracer.start_as_current_span(
+        "relay.policy.evaluate", attributes={"relay.action": handler.action.value}
+    ) as span:
+        plan = handler.plan(args, order, facts, policy, now)
+        span.set_attributes(
+            {
+                "relay.policy.outcome": plan.decision.outcome.value,
+                "relay.policy.rules": list(plan.decision.rules),
+                "relay.policy.version": plan.decision.policy_version,
+            }
+        )
+    return plan
 
 
 def denied_result(decision: Decision) -> DeniedResult:

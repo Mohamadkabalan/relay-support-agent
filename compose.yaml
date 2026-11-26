@@ -9,6 +9,9 @@ x-backend-env: &backend-env
   DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-relay}:${POSTGRES_PASSWORD:-relay-dev-only}@postgres:5432/${POSTGRES_DB:-relay}
   REDIS_URL: redis://redis:6379/0
   RELAY_MCP_JWT_SECRET: ${RELAY_MCP_JWT_SECRET:-dev-only-mcp-turn-token-secret-change-me}
+  # Traces go to Phoenix over OTLP/HTTP, redacted on the way out (PLAN.md §10).
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://phoenix:6006}
+  RELAY_TRACE_CONTENT: ${RELAY_TRACE_CONTENT:-redacted}
 
 # The API and the MCP server run from the same image.
 x-backend: &backend
@@ -74,6 +77,11 @@ services:
       PHOENIX_SQL_DATABASE_URL: postgresql://${POSTGRES_USER:-relay}:${POSTGRES_PASSWORD:-relay-dev-only}@postgres:5432/phoenix
       PHOENIX_TELEMETRY_ENABLED: "false"
       PHOENIX_LOG_MIGRATIONS: "false"  # its default echoes ~1,900 lines of SQL on first boot
+      # Phoenix turns on authentication for any non-loopback bind unless told otherwise, and then
+      # refuses our spans (401). Locally it is published on 127.0.0.1 only, so it runs open; the
+      # production stack (Phase 8) enables auth and gives the exporters an API key through
+      # OTEL_EXPORTER_OTLP_HEADERS.
+      PHOENIX_ENABLE_AUTH: ${PHOENIX_ENABLE_AUTH:-false}
     ports:
       - "127.0.0.1:${PHOENIX_HOST_PORT:-6006}:6006"
     depends_on:
@@ -115,6 +123,14 @@ services:
       RELAY_AGENT_EFFORT: ${RELAY_AGENT_EFFORT:-medium}
       RELAY_OPENAI_MODEL: ${RELAY_OPENAI_MODEL:-gpt-5.5}
       RELAY_THINKING_PREFIX_MISMATCH: ${RELAY_THINKING_PREFIX_MISMATCH:-error}
+      # Sessions, logins and limits (PLAN.md §11, §12).
+      RELAY_SESSION_SECRET: ${RELAY_SESSION_SECRET:-dev-only-session-secret-change-me-0123456789}
+      RELAY_COOKIE_SECURE: ${RELAY_COOKIE_SECURE:-false}
+      RELAY_ALLOWED_ORIGINS: '["http://localhost:${RELAY_HTTP_PORT:-8080}", "http://127.0.0.1:${RELAY_HTTP_PORT:-8080}"]'
+      RELAY_DEMO_MODE: ${RELAY_DEMO_MODE:-true}
+      RELAY_OPERATOR_EMAIL: ${RELAY_OPERATOR_EMAIL:-operator@relay.example}
+      RELAY_OPERATOR_PASSWORD_HASH: ${RELAY_OPERATOR_PASSWORD_HASH:-}
+      RELAY_DAILY_SPEND_CAP_USD: ${RELAY_DAILY_SPEND_CAP_USD:-20}
     healthcheck:
       # /api/readyz returns 503 until Postgres and Redis answer, which fails urlopen.
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/readyz', timeout=3)"]

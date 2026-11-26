@@ -34,6 +34,8 @@ import httpx2
 from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
 from mcp_types import CallToolResult, TextContent
+from opentelemetry import trace
+from opentelemetry.trace import StatusCode
 
 from relay import turn_tokens
 from relay.agent.manifest import Manifest
@@ -46,6 +48,7 @@ from relay.mcp_server.runtime import ToolRuntime
 from relay.mcp_server.server import build_server
 
 logger = logging.getLogger(__name__)
+tracer = trace.get_tracer("relay.agent")
 
 ERROR_CODE = re.compile(r"^\[([A-Z_]+)\]")
 
@@ -154,6 +157,7 @@ class TurnCalls:
     timeout_s: float = 10.0
     count: int = 0
     seen: dict[tuple[str, str], ToolResult] = field(default_factory=dict)
+    span_attributes: dict[str, Any] = field(default_factory=dict)  # added to each call's span
 
 
 def canonical(arguments: dict[str, Any]) -> str:
@@ -199,7 +203,27 @@ async def execute(
 
     async def run(i: int) -> None:
         call = calls[i]
-        done[i] = await _run_one(call, call.arguments or {}, session, turn.timeout_s)
+        with tracer.start_as_current_span(
+            "relay.tool_call",
+            attributes={
+                **turn.span_attributes,
+                "openinference.span.kind": "TOOL",
+                "gen_ai.tool.name": call.name,
+                "tool.name": call.name,
+            },
+        ) as span:
+            done[i] = await _run_one(call, call.arguments or {}, session, turn.timeout_s)
+            executed = done[i]
+            span.set_attributes(
+                {
+                    "relay.tool.outcome": executed.outcome.value,
+                    "relay.tool.error_code": executed.error_code or "",
+                    "relay.tool.latency_ms": executed.latency_ms,
+                    "relay.tool.attempts": executed.attempts,
+                }
+            )
+            if executed.result.is_error:
+                span.set_status(StatusCode.ERROR, executed.error_code or "tool error")
 
     async with asyncio.TaskGroup() as group:
         for i in reads:

@@ -12,6 +12,7 @@ A turn ends in exactly one terminal state:
 | budget_exhausted | conversation token budget used up, or turn deadline    | a handoff         |
 | refused          | a refusal that survived the server-side fallback       | a polite decline  |
 | failed           | an API error after retries, or output truncated twice  | an apology        |
+| paused           | the daily spend cap would be passed (no model call)    | a pause notice    |
 
 Step limits and budgets escalate the conversation. Whatever happens, the transcript stays valid
 for the next request, and nothing already stored is ever changed:
@@ -22,7 +23,12 @@ for the next request, and nothing already stored is ever changed:
   apology or acknowledgement) as an assistant message, so the model's transcript matches the
   chat and the next customer message never directly follows a system note.
 
-A failed turn is retried by sending the message again, as the apology asks.
+A failed turn is retried by sending the message again, as the apology asks. A turn whose process
+stopped half-way is finished by `Agent.recover` (the scheduler finds it), the same way.
+
+Each turn is one trace, rooted at `relay.turn`, with a span per model call, tool call and guard
+check (§10). Message previews go on the spans only when `trace_content` is on; the exporter
+redacts them before they leave the process.
 """
 
 import asyncio
@@ -37,6 +43,11 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from typing import Any
 
+from opentelemetry import context as otel_context
+from opentelemetry import trace
+from opentelemetry.trace import Link, Span, StatusCode, format_trace_id
+
+from relay.agent.events import AgentEvent, Listener
 from relay.agent.guardrails.injection import injection_families, injection_note
 from relay.agent.guardrails.output import RETRACTION_TEXT, order_numbers, output_problems
 from relay.agent.locks import Locks
@@ -52,7 +63,9 @@ from relay.agent.providers.base import (
     TextDelta,
     ToolCall,
     ToolUseStarted,
+    Usage,
 )
+from relay.agent.spend import SpendCapReachedError, SpendGuard, worst_case_micros
 from relay.agent.store import ConversationStore, Inbound, Pinned, StartedTurn
 from relay.agent.tools import ToolConnector, ToolSession, TurnCalls, execute
 from relay.agent.transcript import (
@@ -65,7 +78,7 @@ from relay.agent.transcript import (
     ToolResults,
 )
 from relay.clock import Clock
-from relay.db.models import Conversation
+from relay.db.models import Conversation, Turn
 from relay.domain.enums import (
     ApprovalStatus,
     ConversationStatus,
@@ -80,6 +93,9 @@ from relay.domain.policy_config import PolicyConfig
 from relay.domain.scope import CustomerScope
 
 logger = logging.getLogger(__name__)
+tracer = trace.get_tracer("relay.agent")
+
+PREVIEW_CHARS = 1000  # message previews on spans, when trace content is on
 
 HANDOFF_TEXT = (
     "This needs one of our specialists, so I've passed your case on. They'll reply here {when}."
@@ -97,6 +113,15 @@ WRAP_UP_NOTE = (
     "This conversation is close to its length limit. Wrap up: resolve the current request, or "
     "hand the conversation to a human if it can't be resolved soon."
 )
+PAUSED_TEXT = (
+    "Sorry, our assistant has reached its daily limit and is paused until 00:00 UTC. Please "
+    "come back after that."
+)
+OPERATOR_NOTE = (
+    "While a team member handled this conversation, they wrote to the customer:\n{replies}\n"
+    "Take this into account; it is part of the conversation."
+)
+RECOVERED_ERROR = "recovered: the process stopped during this turn"
 INTERRUPTED_RESULT = (
     "[INTERRUPTED] The turn ended before this call finished, so its outcome is unknown. Look "
     "the order up again before you assume anything about it."
@@ -122,15 +147,6 @@ class AgentLimits:
     @property
     def lock_ttl_s(self) -> float:
         return self.turn_deadline_s + 30
-
-
-@dataclass(frozen=True, slots=True)
-class AgentEvent:
-    type: str
-    payload: dict[str, Any]
-
-
-Listener = Callable[[AgentEvent], Awaitable[None]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,6 +190,8 @@ class Agent:
     limits: AgentLimits = field(default_factory=AgentLimits)
     user_key_secret: str | None = None  # keys the opaque metadata.user_id; None sends none
     listener: Listener | None = None  # live events, including text deltas (never stored)
+    spend: SpendGuard | None = None  # the daily spend cap; None means no cap
+    trace_content: bool = False  # put message previews on spans (redacted on export)
     # Ablations for the eval mechanism check (§9.8): change what new conversations are pinned to.
     prompt_transform: Callable[[str], str] | None = None
     manifest_transform: Callable[[Manifest], Manifest] | None = None
@@ -231,6 +249,46 @@ class Agent:
                 return None
             return await _TurnRun(self, conversation, started).run()
 
+    async def recover(self, turn: Turn) -> TurnOutcome | None:
+        """Finish a turn left `running` by a process that stopped (PLAN.md §5.2).
+
+        Only a free lock means the turn is really orphaned: a live turn holds its lock until it
+        finishes. What happens depends on how far the turn got:
+
+        - Nothing appended yet: its inputs go back to the inbox for a fresh turn.
+        - It ended on a model reply without tool calls: the customer has that reply, so the turn
+          is closed as completed.
+        - Otherwise: unanswered tool calls get interrupted results, and the customer gets the
+          failure apology, exactly as for a failed turn.
+
+        Returns None when there was nothing to recover.
+        """
+        key = f"conversation:{turn.conversation_id}"
+        async with self.locks.hold(key, self.limits.lock_ttl_s) as held:
+            if not held:
+                return None
+            current = await self.store.last_turn(turn.conversation_id)
+            if current is None or current.id != turn.id or current.status is not TurnStatus.RUNNING:
+                return None
+            conversation = await self.store.get(turn.conversation_id)
+            started = StartedTurn(turn.id, turn.seq, turn.trigger, inputs=[])
+            run = _TurnRun(self, conversation, started)
+            if not await self.store.turn_messages(turn.id):
+                await self.store.release_inbox(turn.id)
+                await self.store.finish_turn(
+                    turn.id, TurnStatus.FAILED, latency_ms=0, error=RECOVERED_ERROR
+                )
+                await run.emit("turn.completed", {"turn": turn.seq, "status": "failed"})
+                return TurnOutcome(turn.id, turn.seq, TurnStatus.FAILED, [], error=RECOVERED_ERROR)
+            last = await self.store.last_model_message(turn.conversation_id)
+            status = TurnStatus.FAILED
+            if last is not None and last.kind is MessageKind.ASSISTANT:
+                calls = last.content.get("tool_calls") or []
+                run.pending = [ToolCall(c["id"], c["name"], c.get("arguments")) for c in calls]
+                if not calls:
+                    status = TurnStatus.COMPLETED
+            return await run.finish(status, RECOVERED_ERROR)
+
 
 class _TurnRun:
     """The state of one turn while it runs."""
@@ -266,11 +324,40 @@ class _TurnRun:
         self.infrastructure_error = False
         self.exits = AsyncExitStack()
         self.session: ToolSession | None = None
+        self.usage = Usage()
+        self.cost_micros = 0
+        self.span: Span = trace.INVALID_SPAN
+        self.trace_id: str | None = None
+        self.span_attributes = {"session.id": str(conversation.id)}
+        self.calls.span_attributes = self.span_attributes
 
     # ------------------------------------------------------------ the turn
 
     async def run(self) -> TurnOutcome:
+        # A new trace per turn (§10), linked to whatever started it (an HTTP request, say).
+        caller = trace.get_current_span().get_span_context()
+        with tracer.start_as_current_span(
+            "relay.turn",
+            context=otel_context.Context(),
+            links=[Link(caller)] if caller.is_valid else (),
+            attributes={
+                **self.span_attributes,
+                "openinference.span.kind": "AGENT",
+                "gen_ai.conversation.id": str(self.id),
+                "relay.turn.seq": self.turn.seq,
+                "relay.turn.trigger": self.turn.trigger.value,
+            },
+        ) as span:
+            self.span = span
+            if span.get_span_context().is_valid:
+                self.trace_id = format_trace_id(span.get_span_context().trace_id)
+            return await self.run_traced()
+
+    async def run_traced(self) -> TurnOutcome:
         await self.emit("turn.started", {"turn": self.turn.seq, "trigger": self.turn.trigger})
+        if self.agent.trace_content:
+            texts = [i.payload.get("text", "") for i in self.turn.inputs]
+            self.span.set_attribute("input.value", "\n".join(texts)[:PREVIEW_CHARS])
         error: str | None = None
         try:
             status = await self.body()
@@ -278,6 +365,8 @@ class _TurnRun:
             status, error = TurnStatus.BUDGET_EXHAUSTED, "turn deadline reached"
         except TruncatedTwiceError:
             status, error = TurnStatus.FAILED, "output truncated twice"
+        except SpendCapReachedError:
+            status, error = TurnStatus.PAUSED, "daily spend cap reached"
         except ProviderError as failure:
             status, error = TurnStatus.FAILED, str(failure)
             self.infrastructure_error = failure.infrastructure
@@ -295,8 +384,10 @@ class _TurnRun:
         approvals = [i for i in self.turn.inputs if i.kind is InboxKind.APPROVAL_RESOLVED]
 
         if self.conversation.status is ConversationStatus.ESCALATED and texts:
-            # A human owns the conversation now: acknowledge without a model call (§5.3).
-            notes = [_approval_note(approval, self.agent.policy) for approval in approvals]
+            # A human owns the conversation now: acknowledge without a model call (§5.3). What
+            # the operator wrote still joins the transcript, for when the agent takes over again.
+            notes = await self.operator_notes()
+            notes.extend(_approval_note(approval, self.agent.policy) for approval in approvals)
             await self.append_inputs(texts, approvals, notes)
             when = self.agent.policy.escalation.response_time_text
             await self.say(ESCALATED_ACK_TEXT.format(when=when), "escalated")
@@ -351,10 +442,49 @@ class _TurnRun:
             max_tokens=max_tokens,
             user_key=self.user_key(),
         )
+        provider = self.agent.provider
+        reservation = None
+        if self.agent.spend is not None:  # raises SpendCapReachedError before any call
+            reservation = await self.agent.spend.reserve(worst_case_micros(provider.model, request))
         self.model_calls += 1
-        response = await self.within_deadline(
-            self.agent.provider.complete(request, self.on_model_event)
-        )
+        with tracer.start_as_current_span(
+            "relay.model_call",
+            attributes={
+                **self.span_attributes,
+                "openinference.span.kind": "LLM",
+                "gen_ai.request.model": provider.model,
+                "llm.model_name": provider.model,
+                "relay.model_call.seq": self.model_calls,
+                "relay.effort": provider.effort or "",
+                "gen_ai.request.max_tokens": max_tokens,
+            },
+        ) as span:
+            response = await self.within_deadline(provider.complete(request, self.on_model_event))
+            usage = response.usage
+            span.set_attributes(
+                {
+                    "gen_ai.response.model": response.served_model,
+                    "relay.stop_reason": response.stop.value,
+                    "relay.fallback_used": response.fallback_used,
+                    "gen_ai.usage.input_tokens": usage.input_tokens,
+                    "gen_ai.usage.output_tokens": usage.output_tokens,
+                    "llm.token_count.prompt": usage.input_tokens
+                    + usage.cache_read_tokens
+                    + usage.cache_write_tokens,
+                    "llm.token_count.completion": usage.output_tokens,
+                    "llm.token_count.total": usage.processed,
+                    "relay.usage.cache_read_tokens": usage.cache_read_tokens,
+                    "relay.usage.cache_write_tokens": usage.cache_write_tokens,
+                    "relay.cost_micros": response.cost_micros or 0,
+                    "relay.latency_ms": response.latency_ms,
+                }
+            )
+            if response.ttft_ms is not None:
+                span.set_attribute("relay.ttft_ms", response.ttft_ms)
+        if self.agent.spend is not None and reservation is not None:
+            await self.agent.spend.settle(reservation, response.cost_micros)
+        self.usage += response.usage
+        self.cost_micros += response.cost_micros or 0
         await self.store.record_model_call(
             self.id,
             self.turn.id,
@@ -390,7 +520,12 @@ class _TurnRun:
         allowed = await self.store.order_numbers(self.conversation.customer_id)
         for typed in await self.store.customer_texts(self.id):
             allowed |= order_numbers(typed)
-        problems = output_problems(text, self.prompt, allowed)
+        with tracer.start_as_current_span(
+            "relay.guard.output",
+            attributes={**self.span_attributes, "openinference.span.kind": "GUARDRAIL"},
+        ) as span:
+            problems = output_problems(text, self.prompt, allowed)
+            span.set_attribute("relay.guard.flags", problems)
         if not problems:
             self.replies.append(text)
             return
@@ -468,14 +603,19 @@ class _TurnRun:
                 )
                 await self.say(FAILURE_TEXT, "failure")
                 await self.emit("error", {"code": "turn_failed", "message": FAILURE_TEXT})
+            case TurnStatus.PAUSED:
+                await self.say(PAUSED_TEXT, "paused")
+                await self.emit("error", {"code": "paused", "message": PAUSED_TEXT})
         await self.store.finish_turn(
             self.turn.id,
             status,
             latency_ms=int((time.monotonic() - self.started_at) * 1000),
             error=error,
             retracted=self.retracted,
+            trace_id=self.trace_id,
         )
         await self.emit("turn.completed", {"turn": self.turn.seq, "status": status.value})
+        self.record_on_span(status, error)
         return TurnOutcome(
             self.turn.id,
             self.turn.seq,
@@ -485,6 +625,25 @@ class _TurnRun:
             error,
             self.infrastructure_error,
         )
+
+    def record_on_span(self, status: TurnStatus, error: str | None) -> None:
+        span = self.span
+        span.set_attributes(
+            {
+                "relay.turn.status": status.value,
+                "relay.turn.steps": self.model_calls,
+                "relay.turn.tool_calls": self.tool_seq,
+                "llm.token_count.total": self.usage.processed,
+                "relay.usage.input_tokens": self.usage.input_tokens,
+                "relay.usage.output_tokens": self.usage.output_tokens,
+                "relay.usage.cache_read_tokens": self.usage.cache_read_tokens,
+                "relay.cost_micros": self.cost_micros,
+            }
+        )
+        if self.agent.trace_content and self.replies:
+            span.set_attribute("output.value", "\n".join(self.replies)[:PREVIEW_CHARS])
+        if status is TurnStatus.FAILED:
+            span.set_status(StatusCode.ERROR, error or "failed")
 
     async def hand_off(
         self, reason: EscalationReason, summary: str, priority: EscalationPriority
@@ -511,6 +670,7 @@ class _TurnRun:
         notes: list[str] = []
         if self.turn.seq == 1:
             notes.append(await self.context_note())
+        notes.extend(await self.operator_notes())
         previous = await self.store.turns_before(self.id, self.turn.seq)
         if previous and previous[-1].retracted:
             notes.append(
@@ -519,7 +679,12 @@ class _TurnRun:
             )
         flagged = self.conversation.injection_flags
         for text in texts:
-            families = injection_families(text)
+            with tracer.start_as_current_span(
+                "relay.guard.input",
+                attributes={**self.span_attributes, "openinference.span.kind": "GUARDRAIL"},
+            ) as span:
+                families = injection_families(text)
+                span.set_attribute("relay.guard.flags", families)
             if families:
                 flagged = await self.store.count_injection_flag(self.id)
                 notes.append(injection_note(families))
@@ -529,6 +694,13 @@ class _TurnRun:
             notes.append(WRAP_UP_NOTE)
             await self.warned()
         return notes, flagged
+
+    async def operator_notes(self) -> list[str]:
+        replies = await self.store.operator_replies_since_last_turn(self.id)
+        if not replies:
+            return []
+        quoted = "\n".join(f'- "{reply}"' for reply in replies)
+        return [OPERATOR_NOTE.format(replies=quoted)]
 
     async def context_note(self) -> str:
         policy = self.agent.policy
@@ -599,12 +771,20 @@ class _TurnRun:
                 await self.emit("status", {"label": label})
 
     async def emit(self, type_: str, payload: dict[str, Any]) -> None:
-        await self.store.emit(self.id, self.turn.id, type_, payload)
-        await self.live(type_, payload)
+        event = await self.store.emit(self.id, self.turn.id, type_, payload)
+        await self.publish(event)
 
     async def live(self, type_: str, payload: dict[str, Any]) -> None:
-        if self.agent.listener is not None:
-            await self.agent.listener(AgentEvent(type_, payload))
+        """An event for live watchers only (text deltas): never stored, never replayed."""
+        await self.publish(AgentEvent(self.id, type_, payload))
+
+    async def publish(self, event: AgentEvent) -> None:
+        if self.agent.listener is None:
+            return
+        try:
+            await self.agent.listener(event)
+        except Exception:  # a watcher's failure must not fail the customer's turn
+            logger.exception("Publishing %s for conversation %s failed", event.type, self.id)
 
     def near_budget(self) -> bool:
         return self.processed >= self.limits.wrap_up_at * self.limits.conversation_tokens

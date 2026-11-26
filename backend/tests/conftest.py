@@ -14,6 +14,7 @@ from relay.config import Settings
 UNREACHABLE_DATABASE_URL = "postgresql+asyncpg://relay:relay@127.0.0.1:1/relay"
 UNREACHABLE_REDIS_URL = "redis://127.0.0.1:1/0"
 TEST_JWT_SECRET = "test-only-secret-for-turn-tokens-0123456789"
+TEST_SESSION_SECRET = "test-only-secret-for-session-ids-0123456789"
 
 
 def make_settings(**overrides: object) -> Settings:
@@ -23,6 +24,7 @@ def make_settings(**overrides: object) -> Settings:
         "database_url": UNREACHABLE_DATABASE_URL,
         "redis_url": UNREACHABLE_REDIS_URL,
         "mcp_jwt_secret": TEST_JWT_SECRET,
+        "session_secret": TEST_SESSION_SECRET,
         **overrides,
     }
     return Settings.model_validate(values)

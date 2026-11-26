@@ -30,7 +30,7 @@ from relay.domain.facts import facts_for, load_owned_order, lock_customer
 from relay.domain.policy import Outcome
 from relay.domain.results import ApprovalView
 from relay.domain.scope import Deps, OperatorScope, SystemScope
-from relay.domain.writes import ActionArgs, ActionHandler
+from relay.domain.writes import ActionArgs, ActionHandler, traced_plan
 
 HANDLERS: dict[WriteAction, ActionHandler[Any, Any]] = {
     WriteAction.ISSUE_REFUND: refunds.HANDLER,
@@ -82,7 +82,7 @@ async def resolve(
     await lock_customer(session, approval.customer_id)
     order = await load_owned_order(session, approval.customer_id, args.order_number, lock=True)
     facts = await facts_for(session, order, deps.policy, now)
-    plan = handler.plan(args, order, facts, deps.policy, now)
+    plan = traced_plan(handler, args, order, facts, deps.policy, now)
     decision = plan.decision
 
     failure: dict[str, Any] | None = None

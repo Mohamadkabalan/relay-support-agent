@@ -9,7 +9,8 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from relay.agent.loop import Agent, AgentEvent, TurnOutcome
+from relay.agent.events import AgentEvent
+from relay.agent.loop import Agent, TurnOutcome
 from relay.agent.providers.scripted import ScriptedProvider, ScriptedRequest
 from relay.db.models import Message, ToolCall, Turn
 from relay.domain.enums import MessageKind

@@ -6,11 +6,13 @@ from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from relay.agent.events import Listener
 from relay.agent.locks import LocalLocks, Locks
-from relay.agent.loop import Agent, AgentLimits, Listener
+from relay.agent.loop import Agent, AgentLimits
 from relay.agent.providers.anthropic import AnthropicProvider, PrefixMismatch
 from relay.agent.providers.base import ModelProvider
 from relay.agent.providers.openai import OpenAIProvider
+from relay.agent.spend import SpendGuard
 from relay.agent.store import ConversationStore
 from relay.agent.tools import HttpTools, InProcessTools, ToolConnector
 from relay.clock import Clock, SystemClock
@@ -99,6 +101,8 @@ def build_agent(
     locks: Locks | None = None,
     limits: AgentLimits | None = None,
     listener: Listener | None = None,
+    spend: SpendGuard | None = None,
+    trace_content: bool = False,
 ) -> Agent:
     clock = clock or SystemClock()
     policy = policy or default_policy()
@@ -114,4 +118,6 @@ def build_agent(
         limits=limits or AgentLimits(),
         user_key_secret=secret.get_secret_value() if secret else None,
         listener=listener,
+        spend=spend,
+        trace_content=trace_content,
     )

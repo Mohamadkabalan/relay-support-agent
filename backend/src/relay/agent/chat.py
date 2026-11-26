@@ -10,7 +10,8 @@ import sys
 import uuid
 from collections.abc import Awaitable, Callable
 
-from relay.agent.loop import Agent, AgentEvent, ConversationClosedError
+from relay.agent.events import AgentEvent
+from relay.agent.loop import Agent, ConversationClosedError
 from relay.agent.store import InboxFullError
 from relay.domain.money import format_cents
 

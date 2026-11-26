@@ -108,6 +108,12 @@ smoke: .env ## One live refund conversation with Claude, checked end to end (nee
 	$(COMPOSE) up --detach --wait postgres redis
 	cd backend && $(TEST_ENV) uv run relay smoke
 
+# ---------------------------------------------------------------- API
+
+.PHONY: approval-flow
+approval-flow: ## The approval flow through the HTTP API with curl (needs make up, make seed, ANTHROPIC_API_KEY)
+	./docs/examples/approval-flow.sh
+
 # ---------------------------------------------------------------- evals
 
 # The harness runs on the host, like the tests, against the compose Postgres. Live targets print

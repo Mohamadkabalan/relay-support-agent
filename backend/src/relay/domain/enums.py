@@ -152,6 +152,7 @@ class TurnStatus(StrEnum):
     BUDGET_EXHAUSTED = "budget_exhausted"
     REFUSED = "refused"
     FAILED = "failed"
+    PAUSED = "paused"  # the daily spend cap was reached, so no model call was made
 
 
 class MessageKind(StrEnum):

@@ -7,7 +7,15 @@ Every setting is documented in `.env.example` at the repository root. Docker Com
 from functools import lru_cache
 from typing import Literal, Self
 
-from pydantic import AliasChoices, Field, PostgresDsn, RedisDsn, SecretStr, model_validator
+from pydantic import (
+    AliasChoices,
+    Field,
+    PostgresDsn,
+    RedisDsn,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # .env.example ships development secrets containing this marker; production refuses them.
@@ -64,6 +72,38 @@ class Settings(BaseSettings):
 
     # Largest MCP request body the HTTP server accepts.
     mcp_max_request_bytes: int = Field(default=64 * 1024, gt=0)
+
+    # ---------------------------------------------------------------- agent runtime (Phase 3)
+
+    # Where the agent reaches the MCP server (inside the compose network).
+    mcp_url: str = "http://mcp:8001/mcp"
+
+    # The model provider behind the agent, and its credentials. Keys are read only from the
+    # environment; the providers' own variable names are used so the SDKs' docs apply.
+    provider: Literal["anthropic", "openai"] = "anthropic"
+    anthropic_api_key: SecretStr | None = Field(
+        default=None, validation_alias=AliasChoices("ANTHROPIC_API_KEY", "anthropic_api_key")
+    )
+    openai_api_key: SecretStr | None = Field(
+        default=None, validation_alias=AliasChoices("OPENAI_API_KEY", "openai_api_key")
+    )
+    agent_model: str = "claude-opus-5-5"  # D2
+    agent_effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
+    openai_model: str = "gpt-5.5"  # in openai 3.60.0's model list; not run live in this repo
+    # Server-side refusal fallbacks (`fallbacks: "default"`). Off for model-comparison runs.
+    agent_fallbacks: bool = True
+    # What the API does when replayed history no longer matches a thinking block: "error" fails
+    # the request (development, CI and evals, so a history edit is caught); production sends
+    # "drop_block" and alerts on the reported drops (PLAN.md §5.4).
+    thinking_prefix_mismatch: Literal["error", "drop_block"] = "error"
+
+    @field_validator("anthropic_api_key", "openai_api_key", mode="before")
+    @classmethod
+    def _blank_key_is_no_key(cls, value: object) -> object:
+        """`ANTHROPIC_API_KEY=` in .env means "not set", not an empty key."""
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @model_validator(mode="after")
     def _no_dev_secrets_in_prod(self) -> Self:

@@ -127,3 +127,52 @@ class EscalationPriority(StrEnum):
 class EscalationStatus(StrEnum):
     OPEN = "open"
     RESOLVED = "resolved"
+
+
+# ---------------------------------------------------------------- conversations (agent runtime)
+
+
+class ConversationStatus(StrEnum):
+    ACTIVE = "active"
+    ESCALATED = "escalated"  # handed to a human; new messages get a fixed acknowledgement
+    CLOSED = "closed"
+
+
+class TurnTrigger(StrEnum):
+    CUSTOMER_MESSAGE = "customer_message"
+    APPROVAL_RESOLVED = "approval_resolved"  # an operator decided; the agent tells the customer
+
+
+class TurnStatus(StrEnum):
+    """A turn's state while it runs, then its terminal state (PLAN.md §5.2)."""
+
+    RUNNING = "running"
+    COMPLETED = "completed"
+    STEP_LIMIT = "step_limit"
+    BUDGET_EXHAUSTED = "budget_exhausted"
+    REFUSED = "refused"
+    FAILED = "failed"
+
+
+class MessageKind(StrEnum):
+    """One entry of a conversation's append-only transcript."""
+
+    CUSTOMER = "customer"  # what the customer typed
+    ASSISTANT = "assistant"  # a model response, stored exactly as the provider returned it
+    TOOL_RESULTS = "tool_results"  # the results of one response's tool calls
+    SYSTEM_NOTE = "system_note"  # trusted facts from the runtime: date, approvals, flags
+    EVENT = "event"  # the automated user line that lets the agent speak after an approval
+    NOTICE = "notice"  # shown to the customer, never sent to the model (handoffs, apologies)
+
+
+class InboxKind(StrEnum):
+    CUSTOMER_MESSAGE = "customer_message"
+    APPROVAL_RESOLVED = "approval_resolved"
+
+
+class ToolCallOutcome(StrEnum):
+    OK = "ok"
+    ERROR = "error"  # the tool answered with is_error (bad arguments, unknown order, ...)
+    DUPLICATE = "duplicate"  # same call earlier in the turn: answered from that result
+    REJECTED = "rejected"  # not run: unknown tool, unreadable arguments, too many calls
+    UNAVAILABLE = "unavailable"  # timed out or failed in transport, after one retry

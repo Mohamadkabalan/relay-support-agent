@@ -66,3 +66,13 @@ def test_mcp_allowed_hosts_can_be_set_as_a_json_list(clean_env: pytest.MonkeyPat
     clean_env.setenv("RELAY_MCP_ALLOWED_HOSTS", '["mcp.internal", "mcp.internal:*"]')
 
     assert Settings().mcp_allowed_hosts == ("mcp.internal", "mcp.internal:*")
+
+
+def test_a_blank_model_key_means_no_key() -> None:
+    from tests.conftest import make_settings
+
+    assert make_settings(anthropic_api_key="", openai_api_key="  ").anthropic_api_key is None
+    assert make_settings(anthropic_api_key="  ").anthropic_api_key is None
+    key = make_settings(anthropic_api_key="sk-ant-test").anthropic_api_key
+    assert key is not None
+    assert key.get_secret_value() == "sk-ant-test"

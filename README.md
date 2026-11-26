@@ -2,7 +2,7 @@
 
 A customer-support agent for Pixel & Volt, a fictional online electronics store. Customers chat with it to check orders, track packages, change shipping addresses, start returns and request refunds. The agent acts only through tools on an MCP server, risky actions wait for a human operator, and an eval suite measures the whole system.
 
-> **Status: Phase 2 of 8 (MCP server).** The store, its policy engine, its seed data and the nine MCP tools work, and Claude Desktop can drive them; there is no agent or UI yet. [PLAN.md](PLAN.md) has the design and the roadmap; this README becomes the full project README in Phase 8.
+> **Status: Phase 3 of 8 (agent runtime).** The store, its policy engine, its seed data, the nine MCP tools and the agent work: you can chat with it in a terminal. There is no web UI, HTTP API or eval suite yet, and no eval numbers. [PLAN.md](PLAN.md) has the design and the roadmap; this README becomes the full project README in Phase 8.
 
 ## Run it locally
 
@@ -20,7 +20,7 @@ make down    # stops it (make clean also deletes the data volumes)
 | http://localhost:8080/api/readyz | API readiness: Postgres and Redis checks |
 | http://localhost:6006 | Phoenix, the trace UI |
 
-`make up` creates `.env` from `.env.example` the first time. Nothing needs an API key yet.
+`make up` creates `.env` from `.env.example` the first time. Only `make chat` and `make smoke` need an API key (`ANTHROPIC_API_KEY` in `.env`); the tests don't.
 
 `make seed` is idempotent: run it again and it reports the data is already there (`RESET=1` starts over, `SEED=7` picks another seed). It prints the order distribution, a sample of orders and a data hash, and fails if an invariant or a demo persona's expected policy outcome doesn't hold. The same seed and clock always give the same hash:
 
@@ -35,6 +35,20 @@ The agent's nine tools live on Relay's own MCP server. Every tool acts for the c
 ```bash
 make mcp-call TOOL=get_order ARGS='{"order_number": "PV-800101"}'   # as Dana, a demo customer
 ```
+
+## Talk to the agent
+
+The agent is a hand-written loop on the Claude Messages API ([ADR-0002](docs/adr/0002-hand-written-loop.md)) that acts only through the MCP tools, with a fresh signed token per turn. With `ANTHROPIC_API_KEY` in `.env` and the stack running:
+
+```bash
+make chat                                         # as Dana: her $349.99 headphones arrived cracked
+make chat MCP_CUSTOMER=sam.castillo@example.com   # a package with no scan for 9 days
+make smoke                                        # one live refund conversation, checked end to end
+```
+
+`make chat` prints what the customer sees, the status labels, approvals and escalations, and each turn's tokens and cost. Writes it makes are real rows in the demo database; `make seed RESET=1` puts everything back. `make smoke` runs on a throwaway database. It costs a few cents and checks three things: the refund was issued, no turn failed, and the second model call read the prompt cache.
+
+The transcript is append-only and replayed byte for byte ([ADR-0005](docs/adr/0005-append-only-transcript.md)). The system prompt is in [backend/src/relay/agent/prompts/v1.md](backend/src/relay/agent/prompts/v1.md).
 
 ## Help-center search
 
@@ -56,6 +70,7 @@ make help    # every target
 backend/    Python package `relay`: API (FastAPI), MCP server, CLI, tests
             relay/domain: policy engine (policy.yaml) and the store services
             relay/mcp_server: the nine tools, identity, strict schemas
+            relay/agent: turn loop, transcript store, model providers, prompt, guardrails
             relay/db: models and migrations; relay/seed: demo data; relay/kb: help center
 frontend/   Next.js app: chat widget and operator console (Phase 6)
 deploy/     Caddy and Postgres configuration

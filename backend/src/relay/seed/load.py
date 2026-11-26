@@ -9,6 +9,13 @@ from relay.seed.generate import SeedData
 
 # Every table the seed owns, in an order that is safe to TRUNCATE together.
 DATA_TABLES = (
+    "conversation_events",
+    "conversation_inbox",
+    "tool_calls",
+    "model_calls",
+    "messages",
+    "turns",
+    "conversations",
     "audit_log",
     "escalations",
     "refund_lines",

@@ -1,7 +1,7 @@
 """The `relay` command-line tool.
 
-Commands so far: `api serve`, `mcp serve|token|call`, `db`, `seed`, `kb` and `version`.
-Later phases add `chat`, `eval` and `demo` (PLAN.md §13).
+Commands so far: `api serve`, `mcp serve|token|call`, `chat`, `smoke`, `db`, `seed`, `kb` and
+`version`. Later phases add `eval` and `demo` (PLAN.md §13).
 """
 
 import asyncio
@@ -18,6 +18,7 @@ import uvicorn
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from relay import __version__, turn_tokens
+from relay.clock import SystemClock
 from relay.config import get_settings
 from relay.db import migrate
 from relay.db.session import engine_from_settings, make_sessionmaker
@@ -176,6 +177,83 @@ def mcp_call(
     failed, text = asyncio.run(call())
     typer.echo(text, err=failed)
     if failed:
+        raise typer.Exit(1)
+
+
+# ---------------------------------------------------------------- agent
+
+
+@app.command()
+def chat(
+    customer: Customer = "dana.whitfield@example.com",
+    in_process: Annotated[
+        bool,
+        typer.Option(
+            "--in-process",
+            help="Run the tools inside this process instead of calling the mcp service. "
+            "Use it outside the compose network, e.g. on the host.",
+        ),
+    ] = False,
+) -> None:
+    """Chat with the agent in the terminal, as a seeded customer (needs a model API key)."""
+    from relay.agent.chat import TerminalView, run_chat, stdout_write
+    from relay.agent.factory import (
+        MissingCredentialsError,
+        build_agent,
+        build_provider,
+        http_tools,
+        in_process_tools,
+    )
+    from relay.agent.tools import ToolConnector
+
+    settings = get_settings()
+    view = TerminalView(stdout_write)
+    try:
+        provider = build_provider(settings)
+        tools: ToolConnector | None = None if in_process else http_tools(settings)
+    except MissingCredentialsError as error:
+        typer.echo(f"relay chat: {error}", err=True)
+        raise typer.Exit(1) from error
+
+    async def work(engine: AsyncEngine) -> None:
+        sessionmaker = make_sessionmaker(engine)
+        async with sessionmaker() as session:
+            scope = await bind_customer(session, customer)
+        connector = tools or in_process_tools(
+            sessionmaker,
+            FastEmbedder(),
+            clock=SystemClock(),
+            policy=default_policy(),
+            store_name=settings.store_name,
+        )
+        agent = build_agent(
+            settings, sessionmaker, provider=provider, tools=connector, listener=view.on_event
+        )
+        await run_chat(agent, scope.customer_id, view)
+
+    try:
+        _run(work)
+    except UnknownCustomerError as error:
+        typer.echo(f"relay chat: {error}", err=True)
+        raise typer.Exit(1) from error
+
+
+@app.command()
+def smoke() -> None:
+    """One live conversation with Claude on a throwaway database, checked end to end.
+
+    Needs ANTHROPIC_API_KEY and costs a few cents. Exits 1 if any check fails.
+    """
+    from relay.agent.chat import TerminalView, stdout_write
+    from relay.agent.factory import MissingCredentialsError
+    from relay.agent.smoke import run_smoke
+
+    try:
+        result = asyncio.run(run_smoke(get_settings(), TerminalView(stdout_write)))
+    except MissingCredentialsError as error:
+        typer.echo(f"relay smoke: {error}", err=True)
+        raise typer.Exit(1) from error
+    if not result.passed:
         raise typer.Exit(1)
 
 

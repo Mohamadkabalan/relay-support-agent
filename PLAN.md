@@ -1,6 +1,6 @@
 # Relay: implementation plan
 
-> **Status:** approved on 2026-11-22, with decisions D1–D4 accepted as recommended. Phases 0, 1 and 2 are done; Phase 2 is awaiting review.
+> **Status:** approved on 2026-11-22, with decisions D1–D4 accepted as recommended. Phases 0 to 3 are done; Phase 3 is awaiting review.
 > Every version, model ID and API behavior in this plan was checked on 2026-11-22 against PyPI, npm, Docker Hub, the Anthropic docs (platform.claude.com/docs) and the MCP Python SDK docs (py.sdk.modelcontextprotocol.io). The cost figures in §9.12 are pre-implementation estimates and are labeled as such. There are no eval results yet, and none appear in this document.
 
 ## Contents
@@ -74,11 +74,11 @@ Your proposed stack stands, with the changes listed after the table.
 |---|---|---|
 | Language | CPython | 3.14 (latest patch 3.14.10) |
 | Packaging | uv | 0.13.x |
-| Claude SDK | `anthropic` | 2.12.0 (released 2026-11-20). It has no sampling parameters, emits OpenTelemetry spans natively (beta) and is built on `httpx2`. |
+| Claude SDK | `anthropic` | 2.14.0 (released 2026-11-24; checked again 2026-11-26 when Phase 3 added it). It has no sampling parameters, sends API version `2026-10-21`, emits OpenTelemetry spans natively (beta) and is built on `httpx2`. |
 | MCP SDK | `mcp` | 2.3.0. Provides `MCPServer` and a high-level `Client`, and speaks protocol `2026-07-28` with fallback to `2025-11-25`. |
 | Turn tokens, MCP HTTP client | PyJWT, httpx2 | 2.15.1, 2.16.2 (added in Phase 2; both were already installed as MCP SDK dependencies) |
 | MCP Inspector | `@modelcontextprotocol/inspector` | 2.16.0, run with `npx` by `make mcp-inspect` (added in Phase 2) |
-| OpenAI SDK | `openai` | 3.57.0. Our provider targets the Responses API, which the SDK README calls the primary API. |
+| OpenAI SDK | `openai` | 3.60.0 (checked 2026-11-26). Our provider targets the Responses API, which the SDK README calls the primary API. |
 | HTTP API | FastAPI | 0.165.0, with native SSE via `fastapi.sse.EventSourceResponse` |
 | Validation and settings | Pydantic, pydantic-settings | 2.14.4, 2.16.3 |
 | ORM and migrations | SQLAlchemy (async) with asyncpg, Alembic | 2.1.9 with 0.32.0, 1.20.1 |
@@ -262,7 +262,7 @@ stateDiagram-v2
 | `step_limit` | 8 model calls in one turn | "This needs one of our specialists. I've passed your case on." | An escalation is created. |
 | `budget_exhausted` | Conversation token budget used up, or 90-second turn deadline reached | The same handoff message | An escalation is created. |
 | `refused` | `stop_reason: "refusal"`, still refused after the server-side fallback | A polite decline | Flagged for review |
-| `failed` | API error after the SDK's retries, or output truncated twice | An apology and an invitation to try again | Flagged. The customer can retry the turn. |
+| `failed` | API error after the SDK's retries, output truncated twice, or an empty response | An apology and an invitation to try again | Flagged. The customer retries by sending the message again (changed in Phase 3: the runtime never re-runs a turn on the same transcript). |
 
 ### 5.3 Conversation and approval lifecycles
 
@@ -306,8 +306,9 @@ The API renders a request in the order tools, then system, then messages. Each l
 
 Rules that keep replays byte-identical:
 
-- Assistant payloads are stored as the exact JSON text the API returned, in a Postgres `json` column. `jsonb` would reorder the keys, and tool-use inputs must replay exactly.
-- Tool results are serialized once with sorted keys and stored as the exact string that was sent.
+- Assistant payloads are stored as the exact JSON text the SDK echoes back (`model_dump(exclude_unset=True)`, the form the SDK itself sends when you pass a response back). They live in a `text` column with an `IS JSON` check; `jsonb` would reorder the keys (changed in Phase 3 from a `json` column, which asyncpg and SQLAlchemy would re-encode).
+- Tool results are compacted once (the server's field order kept) and stored as the exact string that was sent.
+- A turn that ends without a model reply (handoff, refusal, failure, acknowledgement) appends what the customer saw as an assistant message. Otherwise the next customer message would follow a `system` note, which the API rejects. Notices the model must not see (a retraction's replacement, the length-limit close) are stored without a payload (added in Phase 3; ADR-0005).
 - The provider, the model, the prompt version and the tool manifest are recorded on the conversation. A deploy that changes any of them affects only new conversations.
 
 Trusted information enters as `role: "system"` messages, which the API accepts only directly after a user message:
@@ -357,7 +358,7 @@ The prompt is versioned in `backend/src/relay/agent/prompts/` and its hash is st
 | Turn deadline | 90 s | `budget_exhausted` |
 | Conversation token budget | 500K processed tokens (input, cache reads, cache writes and output). Tuned later from eval data. | At 85%, a trusted note asks the model to wrap up. At 100%, a handoff. |
 | Duplicate calls | The same tool with the same canonical arguments twice in one turn | The second call is answered from the first result, with a note, and is not executed. |
-| Tool-call timeout | 10 s per call | Reads are retried once. A commit is retried once with the same token, which is idempotent. After that, a `[TIMEOUT]` result. |
+| Tool-call timeout | 10 s per call | Every call is retried once after a timeout or transport failure: reads have no effects, a preview only issues a token, a commit carries its token, and a second escalation returns the open one. After that, an `[UNAVAILABLE]` result. |
 | Message size | 2,000 characters | HTTP 413 before any model call |
 | Conversation length | 40 customer messages | A polite close, and an offer to start a new conversation |
 | Injection flags | 3 per conversation | The conversation is escalated for review. |
@@ -418,7 +419,7 @@ class ModelResponse:
 ```
 
 - **AnthropicProvider** uses the settings in §5.6.
-- **OpenAIProvider** uses the Responses API, with function tools built from the same manifest. Our trusted `system` items become developer messages. The model comes from the environment; the SDK README's examples use `gpt-5.5`, which we confirm in Phase 3. It passes the same contract tests but is not used for the published numbers.
+- **OpenAIProvider** uses the Responses API, with function tools built from the same manifest. Our trusted `system` items become developer messages. The model comes from the environment (`RELAY_OPENAI_MODEL`, default `gpt-5.5`, which is in openai 3.60.0's model list). It passes the same contract tests against a fake API, has not been run against the live API, and is not used for the published numbers.
 - **ScriptedProvider** replays a script of responses and makes assertions about the requests it receives. It powers the integration tests, the Playwright smoke test, and demos without an API key.
 
 The provider and model are pinned per conversation. Switching provider means starting a new conversation.
@@ -760,7 +761,7 @@ erDiagram
 - CHECK constraints enforce non-negative amounts and positive quantities. Unique indexes cover order, RMA and refund numbers, preview tokens, one open escalation per conversation, and one refund per preview. Foreign keys everywhere.
 - `audit_log` rejects UPDATE and DELETE through a statement-level trigger. The separate application role without those privileges arrives with the production hardening in Phase 8.
 - One shipment per order in v1 (a unique index), which keeps the lost-package rule simple.
-- `conversation_id` columns are plain UUIDs until Phase 3 adds the conversation tables and their foreign keys.
+- `conversation_id` columns on store, approval and audit rows stay plain UUIDs, not foreign keys (decided in Phase 3, ADR-0005). The audit trail must outlive a conversation: the demo reset deletes conversations, and audit rows can't be changed. The conversation tables themselves use foreign keys.
 
 ### Seed data
 
@@ -1223,6 +1224,26 @@ Each phase ends the same way: run every test and linter, fix the failures, then 
 
 **You check:** a 3-minute `relay chat` session, and the system prompt text.
 
+**Delivered** (2026-11-26), with these choices made along the way:
+
+- **Code and records:**
+  - `backend/src/relay/agent/`: `loop`, `store`, `tools` (the MCP client), `manifest`, `locks`, `prompts/v1.md`, `guardrails/`, `providers/`, `chat`, `smoke`, `factory`.
+  - Migration `0002` adds `conversations`, `turns`, `messages` (append-only), `model_calls`, `tool_calls`, `conversation_inbox` and `conversation_events`.
+  - ADR-0002 and ADR-0005.
+- **`relay chat`:**
+  - It runs in the `api` image (`make chat`) and calls the `mcp` service over HTTP with per-turn tokens.
+  - `--in-process` runs the tools inside the chat process, for use outside compose.
+- **`make smoke`:**
+  - It runs on a throwaway database.
+  - It plays a customer whose $59.99 earbuds broke, reacting to the database, until a refund is issued (at most 5 messages).
+  - It checks that the refund was issued, that no turn failed, and that the second model call read the cache.
+  - It always sends `prefix_mismatch_behavior: "error"`.
+- **Retry:** there is no separate retry of a failed turn. The customer sends the message again (§5.2, ADR-0005).
+- **Escalated conversations:** a customer message gets the fixed acknowledgement without a model call. An approval outcome alone still runs a model turn, so the customer hears the decision.
+- **Output guard:** it allows order numbers the customer typed, so the agent can say "I couldn't find PV-800201 on your account".
+- **Scheduler:** the single-flight lock exists (`RedisLocks`, and `LocalLocks` for the CLI and tests). The scheduler that re-checks the inbox after unlocking is Phase 5.
+- **Not run live by me:** `make smoke` and `relay chat` with a real key, and the OpenAI provider against its API. No API key is configured in this environment.
+
 ### Phase 4: Eval harness v1
 
 **Deliverables**
@@ -1397,8 +1418,9 @@ All of these are cheap to change. Tell me if any of them is wrong.
 │   │   │                    chunking, search, embeddings, retrieval eval
 │   │   ├── turn_tokens.py   per-turn JWTs (minted by the API, verified by the MCP server)
 │   │   ├── mcp_server/      server, runtime (errors, transactions), identity, tools, schemas
-│   │   ├── agent/           loop, scheduler, store, budget, mcp client, prompts/,
-│   │   │                    guardrails/, providers/ (base, anthropic, openai, scripted)
+│   │   ├── agent/           loop, store, tools (MCP client), manifest, locks, chat, smoke,
+│   │   │                    prompts/, guardrails/, providers/ (base, anthropic, openai,
+│   │   │                    scripted); the scheduler arrives in Phase 5
 │   │   ├── api/             app, routes (auth, chat, console, metrics), sse, sessions, ratelimit, spend
 │   │   ├── telemetry/       tracing, redaction, logging
 │   │   ├── seed/            generate, catalog, personas, verify
@@ -1448,7 +1470,8 @@ ADRs are written during the phase in which each decision lands.
 | `make eval-quick` | The CI subset, one trial each |
 | `make eval-selftest` | The harness self-tests, with no model calls |
 | `make eval-label` | The labeling CLI for judge validation |
-| `make smoke` | A live end-to-end check that needs a real API key |
+| `make chat` | Chat with the agent in the terminal as `MCP_CUSTOMER` (default Dana). Needs `ANTHROPIC_API_KEY` and a running stack. |
+| `make smoke` | A live end-to-end refund conversation with Claude, checked (needs `ANTHROPIC_API_KEY`; a few cents) |
 | `make mcp-inspect` | Opens the MCP Inspector on the stdio server, as `MCP_CUSTOMER` (default Dana) |
 | `make mcp-call` | Calls one tool over HTTP with a fresh turn token: `make mcp-call TOOL=get_order ARGS='{...}'` |
 | `make demo-reset` | Does what the nightly timer does |
@@ -1458,7 +1481,8 @@ ADRs are written during the phase in which each decision lands.
 Selected keys from `.env.example`:
 
 - `ANTHROPIC_API_KEY` is the only key a reviewer needs.
-- `RELAY_PROVIDER` is `anthropic` by default. It can also be `openai` (which needs `OPENAI_API_KEY` and `RELAY_OPENAI_MODEL`) or `scripted`.
+- `RELAY_PROVIDER` is `anthropic` by default. It can also be `openai` (which needs `OPENAI_API_KEY` and `RELAY_OPENAI_MODEL`). The scripted provider is used in code (tests, and the key-free demo in Phase 6), not through this setting.
+- Agent: `RELAY_THINKING_PREFIX_MISMATCH` (`error` by default; production `drop_block`), `RELAY_AGENT_FALLBACKS` (server-side refusal fallbacks, on by default). A blank key in `.env` counts as unset.
 - Models: `RELAY_AGENT_MODEL=claude-opus-5-5`, `RELAY_AGENT_EFFORT=medium`, `RELAY_SIM_MODEL=claude-opus-5-5`, `RELAY_JUDGE_MODEL=claude-sonnet-5-5`.
 - Infrastructure: `DATABASE_URL`, `REDIS_URL`, `RELAY_MCP_URL`, `RELAY_MCP_JWT_SECRET` (32+ characters; values containing `dev-only` are refused when `RELAY_ENV=prod`), `RELAY_SESSION_SECRET`.
 - MCP server: `RELAY_MCP_CUSTOMER` (the customer a stdio server acts for), `RELAY_MCP_ALLOWED_HOSTS`, `RELAY_MCP_MAX_REQUEST_BYTES` (64 KiB).

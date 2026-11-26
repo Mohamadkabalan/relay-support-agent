@@ -5,8 +5,12 @@ Conventions:
 - Money is integer cents; CHECK constraints keep amounts non-negative and quantities positive.
 - Enumerations are text columns with a CHECK constraint built from the Python enum.
 - Customer-facing entities carry a readable number (PV-, RMA-, RF-, APR-, ESC-) next to the UUID.
-- `conversation_id` columns are plain UUIDs for now. The conversation tables arrive with the agent
-  runtime in Phase 3, whose migration adds the foreign keys.
+- `conversation_id` columns on store, approval and audit rows are plain UUIDs, not foreign keys:
+  the audit trail has to outlive a conversation (the demo reset deletes conversations, and audit
+  rows can't be changed), and the MCP server records whatever conversation the API's signed turn
+  token names. The conversation tables themselves use real foreign keys.
+- Transcript payloads (`messages.raw`, `conversations.tool_manifest`) are text checked with
+  `IS JSON`, not `jsonb`: replay must send back the exact bytes, and `jsonb` reorders keys.
 """
 
 import uuid
@@ -36,9 +40,12 @@ from relay.db.base import Base, TextEnum, uuid_pk
 from relay.domain.enums import (
     ActorType,
     ApprovalStatus,
+    ConversationStatus,
     EscalationPriority,
     EscalationReason,
     EscalationStatus,
+    InboxKind,
+    MessageKind,
     OrderStatus,
     PreviewOutcome,
     ProductCondition,
@@ -50,6 +57,9 @@ from relay.domain.enums import (
     ReturnReason,
     ReturnStatus,
     ShipmentStatus,
+    ToolCallOutcome,
+    TurnStatus,
+    TurnTrigger,
     WriteAction,
 )
 
@@ -454,6 +464,203 @@ class AuditLog(Base):
     conversation_id: Mapped[uuid.UUID | None]
     trace_id: Mapped[str | None] = mapped_column(Text)
     policy_version: Mapped[str | None] = mapped_column(Text)
+
+
+# ---------------------------------------------------------------- conversations (agent runtime)
+
+
+def is_json(column: str, *, nullable: bool = False) -> CheckConstraint:
+    condition = f"{column} IS JSON"
+    if nullable:
+        condition = f"{column} IS NULL OR {condition}"
+    return CheckConstraint(condition, name=f"{column}_is_json")
+
+
+class Conversation(Base):
+    """One chat between a customer and the agent, with everything that is pinned for its lifetime:
+    the provider and model, the system prompt version and the tool manifest (ADR-0005)."""
+
+    __tablename__ = "conversations"
+    __table_args__ = (
+        one_of("status", ConversationStatus),
+        is_json("tool_manifest"),
+        non_negative("cost_micros"),
+    )
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    customer_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("customers.id"), index=True)
+    status: Mapped[ConversationStatus] = mapped_column(TextEnum(ConversationStatus))
+    resolution: Mapped[str | None] = mapped_column(Text)
+    provider: Mapped[str] = mapped_column(Text)
+    model: Mapped[str] = mapped_column(Text)
+    effort: Mapped[str | None] = mapped_column(Text)
+    prompt_version: Mapped[str] = mapped_column(Text)
+    prompt_hash: Mapped[str] = mapped_column(Text)
+    system_prompt: Mapped[str] = mapped_column(Text)  # the exact text every request sends
+    tool_manifest: Mapped[str] = mapped_column(Text)  # exact JSON text, see the module docstring
+    manifest_hash: Mapped[str] = mapped_column(Text)
+    policy_version: Mapped[str] = mapped_column(Text)
+    input_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    output_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    cache_read_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    cache_write_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    cost_micros: Mapped[int] = mapped_column(BigInteger, default=0)  # millionths of a dollar
+    cost_complete: Mapped[bool] = mapped_column(default=True)  # False if a model had no price
+    injection_flags: Mapped[int] = mapped_column(Integer, default=0)
+    budget_warned: Mapped[bool] = mapped_column(default=False)
+    flags: Mapped[list[Any]] = mapped_column(default=list)  # for review: retractions, refusals
+    rating: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime]
+    closed_at: Mapped[datetime | None]
+
+    @property
+    def processed_tokens(self) -> int:
+        """Every token the conversation has made a model read or write (the §5.7 budget)."""
+        return (
+            self.input_tokens
+            + self.output_tokens
+            + self.cache_read_tokens
+            + self.cache_write_tokens
+        )
+
+
+class Turn(Base):
+    __tablename__ = "turns"
+    __table_args__ = (
+        UniqueConstraint("conversation_id", "seq"),
+        one_of("trigger", TurnTrigger),
+        one_of("status", TurnStatus),
+        CheckConstraint("(status = 'running') = (finished_at IS NULL)", name="finished_when_final"),
+    )
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    conversation_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("conversations.id"))
+    seq: Mapped[int] = mapped_column(Integer)
+    trigger: Mapped[TurnTrigger] = mapped_column(TextEnum(TurnTrigger))
+    status: Mapped[TurnStatus] = mapped_column(TextEnum(TurnStatus))
+    steps: Mapped[int] = mapped_column(Integer, default=0)  # model calls
+    tool_call_count: Mapped[int] = mapped_column(Integer, default=0)
+    input_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    output_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    cache_read_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    cache_write_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
+    cost_micros: Mapped[int] = mapped_column(BigInteger, default=0)
+    ttft_ms: Mapped[int | None] = mapped_column(Integer)
+    latency_ms: Mapped[int | None] = mapped_column(Integer)
+    retracted: Mapped[bool] = mapped_column(default=False)  # an output guard replaced the reply
+    error: Mapped[str | None] = mapped_column(Text)
+    trace_id: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime]
+    finished_at: Mapped[datetime | None]
+
+
+class Message(Base):
+    """The transcript. Append-only: a trigger rejects UPDATE and DELETE (ADR-0005).
+
+    `raw` holds the exact provider payload (a JSON array of provider messages) that is replayed on
+    every later request; it is NULL for notices, which the model never sees. `content` is the same
+    entry in a provider-neutral form for the console and analytics.
+    """
+
+    __tablename__ = "messages"
+    __table_args__ = (
+        UniqueConstraint("conversation_id", "seq"),
+        one_of("kind", MessageKind),
+        is_json("raw", nullable=True),
+        CheckConstraint("(kind = 'notice') = (raw IS NULL)", name="raw_unless_notice"),
+    )
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    conversation_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("conversations.id"))
+    seq: Mapped[int] = mapped_column(Integer)
+    turn_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("turns.id"), index=True)
+    kind: Mapped[MessageKind] = mapped_column(TextEnum(MessageKind))
+    content: Mapped[dict[str, Any]]
+    raw: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime]
+
+
+class ModelCall(Base):
+    __tablename__ = "model_calls"
+    __table_args__ = (UniqueConstraint("turn_id", "seq"),)
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    turn_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("turns.id"))
+    seq: Mapped[int] = mapped_column(Integer)
+    provider: Mapped[str] = mapped_column(Text)
+    requested_model: Mapped[str] = mapped_column(Text)
+    served_model: Mapped[str] = mapped_column(Text)
+    effort: Mapped[str | None] = mapped_column(Text)
+    max_tokens: Mapped[int] = mapped_column(Integer)
+    stop_reason: Mapped[str] = mapped_column(Text)
+    refusal_category: Mapped[str | None] = mapped_column(Text)
+    fallback_used: Mapped[bool]
+    input_tokens: Mapped[int] = mapped_column(BigInteger)
+    output_tokens: Mapped[int] = mapped_column(BigInteger)
+    cache_read_tokens: Mapped[int] = mapped_column(BigInteger)
+    cache_write_tokens: Mapped[int] = mapped_column(BigInteger)
+    cost_micros: Mapped[int | None] = mapped_column(BigInteger)  # None when the model has no price
+    latency_ms: Mapped[int] = mapped_column(Integer)
+    ttft_ms: Mapped[int | None] = mapped_column(Integer)
+    request_id: Mapped[str | None] = mapped_column(Text)
+    input_transformations: Mapped[list[Any] | None]
+    thinking: Mapped[str | None] = mapped_column(Text)  # summarized, for the operator replay
+    created_at: Mapped[datetime]
+
+
+class ToolCall(Base):
+    __tablename__ = "tool_calls"
+    __table_args__ = (UniqueConstraint("turn_id", "seq"), one_of("outcome", ToolCallOutcome))
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    turn_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("turns.id"))
+    seq: Mapped[int] = mapped_column(Integer)
+    tool_use_id: Mapped[str] = mapped_column(Text)
+    name: Mapped[str] = mapped_column(Text)
+    arguments: Mapped[dict[str, Any] | None]
+    result: Mapped[str] = mapped_column(Text)  # exactly what the model received
+    is_error: Mapped[bool]
+    outcome: Mapped[ToolCallOutcome] = mapped_column(TextEnum(ToolCallOutcome))
+    error_code: Mapped[str | None] = mapped_column(Text)
+    latency_ms: Mapped[int] = mapped_column(Integer)
+    attempts: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime]
+
+
+class InboxItem(Base):
+    """Customer messages and events waiting for the next turn. A turn claims them in order."""
+
+    __tablename__ = "conversation_inbox"
+    __table_args__ = (
+        one_of("kind", InboxKind),
+        Index(
+            "ix_conversation_inbox_unclaimed",
+            "conversation_id",
+            "id",
+            postgresql_where=text("turn_id IS NULL"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    conversation_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("conversations.id"))
+    kind: Mapped[InboxKind] = mapped_column(TextEnum(InboxKind))
+    payload: Mapped[dict[str, Any]]
+    created_at: Mapped[datetime]
+    turn_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("turns.id"))  # claimed by
+
+
+class ConversationEvent(Base):
+    """Events for the chat stream (§5.10), kept for reconnects. Text deltas are not stored."""
+
+    __tablename__ = "conversation_events"
+    __table_args__ = (Index("ix_conversation_events_conversation_id_id", "conversation_id", "id"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    conversation_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("conversations.id"))
+    turn_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("turns.id"))
+    type: Mapped[str] = mapped_column(Text)
+    payload: Mapped[dict[str, Any]]
+    created_at: Mapped[datetime]
 
 
 # ---------------------------------------------------------------- knowledge base

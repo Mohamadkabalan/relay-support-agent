@@ -106,6 +106,15 @@ services:
       <<: *backend-env
       # The API has no host port; only Caddy reaches it, so trust its X-Forwarded-For.
       RELAY_FORWARDED_ALLOW_IPS: "*"
+      # The agent runs here (and `make chat` runs in this service's image). Only this service
+      # gets the model keys; the MCP server never needs them.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      RELAY_PROVIDER: ${RELAY_PROVIDER:-anthropic}
+      RELAY_AGENT_MODEL: ${RELAY_AGENT_MODEL:-claude-opus-5-5}
+      RELAY_AGENT_EFFORT: ${RELAY_AGENT_EFFORT:-medium}
+      RELAY_OPENAI_MODEL: ${RELAY_OPENAI_MODEL:-gpt-5.5}
+      RELAY_THINKING_PREFIX_MISMATCH: ${RELAY_THINKING_PREFIX_MISMATCH:-error}
     healthcheck:
       # /api/readyz returns 503 until Postgres and Redis answer, which fails urlopen.
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/readyz', timeout=3)"]

@@ -64,7 +64,7 @@ test: .env ## Run the backend tests with the domain coverage gate (starts Postgr
 	cd backend && $(TEST_ENV) uv run pytest --cov=relay.domain --cov-report=term --cov-fail-under=90
 
 test-unit: ## Run only the tests that need no running services
-	cd backend && uv run pytest tests/unit tests/mcp_server
+	cd backend && uv run pytest tests/unit tests/mcp_server tests/agent
 
 lint: frontend/node_modules ## Lint and type-check the backend and the frontend
 	cd backend && uv run ruff check . && uv run ruff format --check . && uv run mypy
@@ -96,11 +96,21 @@ mcp-inspect: ## Open the MCP Inspector on the stdio server as MCP_CUSTOMER (Node
 mcp-call: ## Call one tool over HTTP as MCP_CUSTOMER: make mcp-call TOOL=get_customer [ARGS='{...}']
 	$(COMPOSE) exec -T mcp relay mcp call $(TOOL) '$(or $(ARGS),{})' --as $(MCP_CUSTOMER)
 
+# ---------------------------------------------------------------- agent
+
+.PHONY: chat smoke
+chat: ## Chat with the agent in the terminal as MCP_CUSTOMER (needs ANTHROPIC_API_KEY; run make up first)
+	$(COMPOSE) run --rm -it --no-deps api relay chat --as $(MCP_CUSTOMER)
+
+# The key reaches the command through the environment, never its command line.
+smoke: export ANTHROPIC_API_KEY := $(ANTHROPIC_API_KEY)
+smoke: .env ## One live refund conversation with Claude, checked end to end (needs ANTHROPIC_API_KEY, a few cents)
+	$(COMPOSE) up --detach --wait postgres redis
+	cd backend && $(TEST_ENV) uv run relay smoke
+
 # ---------------------------------------------------------------- later phases
 
-.PHONY: smoke eval eval-quick eval-selftest eval-label demo-reset
-smoke: ## Live end-to-end check with a real API key (Phase 3)
-	@$(call not_yet,3)
+.PHONY: eval eval-quick eval-selftest eval-label demo-reset
 eval: ## Full eval suite, k=3, Markdown + JSON report (Phase 4)
 	@$(call not_yet,4)
 eval-quick: ## The CI eval subset, one trial each (Phase 4)
@@ -120,7 +130,7 @@ endef
 
 .env:
 	cp .env.example .env
-	@echo "Created .env from .env.example. Add ANTHROPIC_API_KEY when Phase 3 needs it."
+	@echo "Created .env from .env.example. Add ANTHROPIC_API_KEY for make chat and make smoke."
 
 frontend/node_modules: frontend/package-lock.json
 	cd frontend && npm ci --no-audit --no-fund

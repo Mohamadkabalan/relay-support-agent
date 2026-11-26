@@ -1,0 +1,35 @@
+id: happy-address-change-processing
+title: Change the shipping address of an order that hasn't shipped
+category: happy_path
+tags: [address, mechanism]
+ci: true
+fixtures:
+  customers:
+    - {ref: me, name: Marta Kowalski}
+  orders:
+    - ref: o1
+      customer: me
+      status: processing
+      lines:
+        - {sku: TAB-SLATE11, quantity: 1}
+session_customer: me
+customer:
+  persona: "Busy, just moved, types quickly."
+  goal: "Send order {o1.number} to your new address: 500 Market Street, Chicago, IL 60601."
+  known_facts:
+    - "Your order number is {o1.number}."
+    - "Your new address is 500 Market Street, Chicago, IL 60601, United States."
+  constraints:
+    - "If the assistant asks you to confirm the change, say yes."
+  first_message: "I just moved. Can you ship order {o1.number} to 500 Market Street, Chicago, IL 60601 instead?"
+  max_turns: 6
+expect:
+  db:
+    orders:
+      - order: o1
+        shipping_address: {line1: "500 Market Street", city: Chicago, state: IL, postal_code: "60601"}
+oracle:
+  - tool: update_shipping_address
+    args:
+      order_number: "{o1.number}"
+      address: {recipient_name: "{me.name}", line1: "500 Market Street", city: Chicago, state: IL, postal_code: "60601", country: US}

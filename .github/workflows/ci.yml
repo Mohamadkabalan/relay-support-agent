@@ -70,8 +70,10 @@ jobs:
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run mypy
-      - name: pytest (unit, integration, MCP, agent) with the domain coverage gate
+      - name: pytest (unit, integration, MCP, agent, evals) with the domain coverage gate
         run: uv run pytest --cov=relay.domain --cov-report=term --cov-fail-under=90
+      - name: Eval harness self-tests (no model calls)
+        run: uv run relay eval selftest
 
   frontend:
     name: Frontend (ESLint, tsc, build)

@@ -73,6 +73,9 @@ select = [
 "tests/**" = ["S101", "S105", "S106"]  # assert is how pytest works; secrets there are fakes
 "src/relay/db/migrations/versions/*" = ["E501"]  # generated DDL, reviewed but not rewrapped
 "src/relay/seed/**" = ["S311"]  # seeded pseudo-randomness is the point: same seed, same data
+# The eval harness reads and writes small local files (results, transcripts) from async code; a
+# few milliseconds of blocking don't matter next to minute-long trials.
+"src/relay/evals/**" = ["ASYNC240"]
 
 [tool.mypy]
 python_version = "3.14"

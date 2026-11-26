@@ -100,7 +100,20 @@ async def ignore_events(event: ModelEvent) -> None:
 
 
 class ProviderError(Exception):
-    """The model call failed after the SDK's own retries, or returned something unusable."""
+    """The model call failed after the SDK's own retries, or returned something unusable.
+
+    `infrastructure` marks failures that say nothing about the agent (a connection error, a
+    timeout, 429 or 5xx after retries): evals keep those out of the pass rates (§9.1).
+    """
+
+    def __init__(self, message: str, *, infrastructure: bool = False) -> None:
+        super().__init__(message)
+        self.infrastructure = infrastructure
+
+
+def is_infrastructure(status_code: int | None) -> bool:
+    """No status (connection or timeout), rate limited, or a server-side error."""
+    return status_code is None or status_code == 429 or status_code >= 500
 
 
 class ModelProvider(Protocol):

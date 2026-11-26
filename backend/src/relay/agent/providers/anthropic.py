@@ -31,6 +31,7 @@ from relay.agent.providers.base import (
     ToolCall,
     ToolUseStarted,
     Usage,
+    is_infrastructure,
 )
 from relay.agent.transcript import (
     AssistantText,
@@ -179,7 +180,10 @@ class AnthropicProvider:
                 message = await stream.get_final_message()
                 request_id = stream.request_id
         except APIError as error:
-            raise ProviderError(f"Claude API error: {error}") from error
+            status = getattr(error, "status_code", None)
+            raise ProviderError(
+                f"Claude API error: {error}", infrastructure=is_infrastructure(status)
+            ) from error
         return self._response(message, started, ttft_ms, request_id)
 
     def _response(

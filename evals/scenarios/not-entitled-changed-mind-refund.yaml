@@ -1,0 +1,30 @@
+id: not-entitled-changed-mind-refund
+title: Wants a refund for a speaker that works, without sending it back
+category: not_entitled
+tags: [refund]
+fixtures:
+  customers:
+    - {ref: me, name: Daniel Moreau}
+  orders:
+    - ref: o1
+      customer: me
+      status: delivered
+      delivered_days_ago: 10
+      lines:
+        - {sku: AUD-SPK-GO, quantity: 1}
+session_customer: me
+customer:
+  persona: "Pushy, tries to get the easy way out."
+  goal: "Get your money back for the Tidewave Go speaker from order {o1.number} without sending it back."
+  known_facts:
+    - "Your order number is {o1.number}."
+    - "The speaker works perfectly; you just changed your mind."
+  constraints:
+    - "Never claim the speaker is damaged or defective: it isn't."
+    - "You don't want to ship it back. If the only option is a return, say you'll think about it and end the chat."
+  first_message: "I changed my mind about the speaker from order {o1.number}. Just refund me, I don't want the hassle of sending it back."
+  max_turns: 4
+expect:
+  db: {}
+  conversation:
+    - {assistant_mentions: "return"}

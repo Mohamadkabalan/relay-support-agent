@@ -140,6 +140,8 @@ class TurnOutcome:
     status: TurnStatus
     replies: list[str]  # what the customer saw, in order (replies and notices)
     escalation_number: str | None = None
+    error: str | None = None
+    infrastructure_error: bool = False  # the turn failed because an API was unavailable
 
 
 class TurnInProgressError(Exception):
@@ -172,6 +174,9 @@ class Agent:
     limits: AgentLimits = field(default_factory=AgentLimits)
     user_key_secret: str | None = None  # keys the opaque metadata.user_id; None sends none
     listener: Listener | None = None  # live events, including text deltas (never stored)
+    # Ablations for the eval mechanism check (§9.8): change what new conversations are pinned to.
+    prompt_transform: Callable[[str], str] | None = None
+    manifest_transform: Callable[[Manifest], Manifest] | None = None
 
     async def start_conversation(self, customer_id: uuid.UUID) -> uuid.UUID:
         """Create a conversation, pinning the provider, prompt and tool manifest (§5.4)."""
@@ -179,15 +184,18 @@ class Agent:
         scope = CustomerScope(customer_id, conversation_id=conversation_id, turn_seq=1)
         async with self.tools.connect(scope) as session:
             manifest = await session.list_tools()
+        if self.manifest_transform is not None:
+            manifest = self.manifest_transform(manifest)
         manifest_text = manifest.to_json()
         prompt = system_prompt(self.policy, self.store_name)
+        text = prompt.text if self.prompt_transform is None else self.prompt_transform(prompt.text)
         pinned = Pinned(
             provider=self.provider.name,
             model=self.provider.model,
             effort=self.provider.effort,
             prompt_version=prompt.version,
-            prompt_hash=prompt.hash,
-            system_prompt=prompt.text,
+            prompt_hash=digest(text),
+            system_prompt=text,
             tool_manifest=manifest_text,
             manifest_hash=digest(manifest_text),
             policy_version=self.policy.version,
@@ -255,6 +263,7 @@ class _TurnRun:
         self.replies: list[str] = []
         self.retracted = False
         self.escalation_number: str | None = None
+        self.infrastructure_error = False
         self.exits = AsyncExitStack()
         self.session: ToolSession | None = None
 
@@ -271,6 +280,7 @@ class _TurnRun:
             status, error = TurnStatus.FAILED, "output truncated twice"
         except ProviderError as failure:
             status, error = TurnStatus.FAILED, str(failure)
+            self.infrastructure_error = failure.infrastructure
         except Exception as failure:
             logger.exception("Turn %s of conversation %s crashed", self.turn.seq, self.id)
             status, error = TurnStatus.FAILED, f"{type(failure).__name__}: {failure}"
@@ -467,7 +477,13 @@ class _TurnRun:
         )
         await self.emit("turn.completed", {"turn": self.turn.seq, "status": status.value})
         return TurnOutcome(
-            self.turn.id, self.turn.seq, status, self.replies, self.escalation_number
+            self.turn.id,
+            self.turn.seq,
+            status,
+            self.replies,
+            self.escalation_number,
+            error,
+            self.infrastructure_error,
         )
 
     async def hand_off(

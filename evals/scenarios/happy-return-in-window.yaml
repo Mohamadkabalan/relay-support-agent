@@ -1,0 +1,35 @@
+id: happy-return-in-window
+title: Return a speaker 10 days after delivery
+category: happy_path
+tags: [return, mechanism]
+ci: true
+fixtures:
+  customers:
+    - {ref: me, name: Leah Okonkwo}
+  orders:
+    - ref: o1
+      customer: me
+      status: delivered
+      delivered_days_ago: 10
+      lines:
+        - {sku: AUD-SPK-GO, quantity: 1}
+session_customer: me
+customer:
+  persona: "Polite and organized."
+  goal: "Return the Tidewave Go speaker from order {o1.number}; you don't need it after all."
+  known_facts:
+    - "Your order number is {o1.number}."
+    - "The speaker works fine; you just don't need it."
+  constraints:
+    - "If the assistant asks you to confirm the return, say yes."
+  first_message: "Hi, I'd like to return the speaker from order {o1.number}. I don't need it anymore."
+  max_turns: 6
+expect:
+  db:
+    returns:
+      - {order: o1, reason: changed_mind, status: label_issued, lines: [{line: 1, quantity: 1}]}
+  conversation:
+    - {assistant_mentions_new: returns.rma_number}
+oracle:
+  - tool: create_return
+    args: {order_number: "{o1.number}", lines: [{line: 1, quantity: 1}], reason: changed_mind}

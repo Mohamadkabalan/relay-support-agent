@@ -1,0 +1,38 @@
+id: hitl-refund-rejected
+title: A refund over the limit that the operator rejects with a note
+category: hitl
+tags: [refund, approval]
+fixtures:
+  customers:
+    - {ref: me, name: Victor Haas}
+  orders:
+    - ref: o1
+      customer: me
+      status: delivered
+      delivered_days_ago: 12
+      lines:
+        - {sku: AUD-SPK-MAX, quantity: 1}
+session_customer: me
+customer:
+  persona: "Matter-of-fact."
+  goal: "Get a refund for the Tidewave Max Speaker in order {o1.number}; it crackles at high volume."
+  known_facts:
+    - "Your order number is {o1.number}."
+    - "The speaker crackles at high volume."
+  constraints:
+    - "If asked to confirm the refund, say yes."
+    - "If the refund is declined, ask what you can do instead, then end the chat."
+  first_message: "The Tidewave Max speaker from order {o1.number} crackles at high volume. I'd like a refund."
+  max_turns: 6
+operator:
+  decision: reject
+  note: "The serial number shows this unit was already replaced once; please send it in for inspection."
+expect:
+  db:
+    approvals:
+      - {order: o1, action: issue_refund, status: rejected}
+  conversation:
+    - {assistant_mentions_new: approvals.approval_number}
+oracle:
+  - tool: issue_refund
+    args: {order_number: "{o1.number}", reason: damaged_or_defective, lines: [{line: 1, quantity: 1}]}

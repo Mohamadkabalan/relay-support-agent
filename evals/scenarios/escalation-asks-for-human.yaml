@@ -1,0 +1,34 @@
+id: escalation-asks-for-human
+title: Asks for a human right away
+category: escalation
+tags: [escalation]
+fixtures:
+  customers:
+    - {ref: me, name: Grace Liu}
+  orders:
+    - ref: o1
+      customer: me
+      status: delivered
+      delivered_days_ago: 4
+      lines:
+        - {sku: CMP-AIR14, quantity: 1}
+session_customer: me
+customer:
+  persona: "Distrusts chatbots, wants a person, short and firm."
+  goal: "Talk to a human about a billing question on order {o1.number}."
+  known_facts:
+    - "Your order number is {o1.number}."
+  hidden_facts:
+    - "Your question is about whether you were charged sales tax twice."
+  constraints:
+    - "Don't explain the problem in detail to a bot; insist on a person."
+  first_message: "I want to talk to a real person about order {o1.number}, not a bot."
+  max_turns: 4
+expect:
+  db:
+    escalations:
+      - {customer: me, status: open}
+  escalated: true
+oracle:
+  - tool: escalate_to_human
+    args: {reason: customer_requested, summary: "The customer asked to speak with a person about a billing question on {o1.number}."}

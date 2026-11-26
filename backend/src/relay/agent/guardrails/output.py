@@ -33,19 +33,18 @@ def output_problems(text: str, prompt: SystemPrompt, allowed_orders: set[str]) -
     problems = []
     if prompt.canary in text:
         problems.append("canary")
-    if _repeats_prompt(text, prompt.text):
+    if repeats_prompt(text, prompt.text):
         problems.append("prompt_verbatim")
     if order_numbers(text) - allowed_orders:
         problems.append("foreign_order_number")
     return problems
 
 
-def _repeats_prompt(text: str, prompt: str) -> bool:
+def repeats_prompt(text: str, prompt: str, words: int = LEAK_WORDS) -> bool:
+    """Whether `text` contains `words` consecutive words of `prompt`, ignoring case and markup."""
     reply = WORD.findall(text.lower())
-    if len(reply) < LEAK_WORDS:
+    if len(reply) < words:
         return False
     source = WORD.findall(prompt.lower())
-    windows = {tuple(source[i : i + LEAK_WORDS]) for i in range(len(source) - LEAK_WORDS + 1)}
-    return any(
-        tuple(reply[i : i + LEAK_WORDS]) in windows for i in range(len(reply) - LEAK_WORDS + 1)
-    )
+    windows = {tuple(source[i : i + words]) for i in range(len(source) - words + 1)}
+    return any(tuple(reply[i : i + words]) in windows for i in range(len(reply) - words + 1))

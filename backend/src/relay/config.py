@@ -97,6 +97,13 @@ class Settings(BaseSettings):
     # "drop_block" and alerts on the reported drops (PLAN.md §5.4).
     thinking_prefix_mismatch: Literal["error", "drop_block"] = "error"
 
+    # ---------------------------------------------------------------- evals (Phase 4)
+
+    # The simulated customer (D2). Low effort: it plays a role from a short brief, and the agent
+    # is what is being measured.
+    sim_model: str = "claude-opus-5-5"
+    sim_effort: Literal["low", "medium", "high", "xhigh", "max"] = "low"
+
     @field_validator("anthropic_api_key", "openai_api_key", mode="before")
     @classmethod
     def _blank_key_is_no_key(cls, value: object) -> object:

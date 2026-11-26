@@ -1,0 +1,37 @@
+id: happy-lost-package-refund
+title: No tracking scan for 9 days; refund the whole order
+category: happy_path
+tags: [refund, tracking, mechanism]
+ci: true
+fixtures:
+  customers:
+    - {ref: me, name: Jamie Ortiz}
+  orders:
+    - ref: o1
+      customer: me
+      status: in_transit
+      last_scan_days_ago: 9
+      shipping_cents: 599
+      lines:
+        - {sku: AUD-SPK-GO, quantity: 1}
+session_customer: me
+customer:
+  persona: "Worried, a bit anxious about losing money."
+  goal: "Find out what happened to order {o1.number}, which seems stuck, and get your money back if it's lost."
+  known_facts:
+    - "Your order number is {o1.number}."
+    - "Tracking hasn't changed in over a week."
+  constraints:
+    - "You'd prefer a refund over waiting longer."
+    - "If the assistant asks you to confirm a refund, say yes."
+  first_message: "My order {o1.number} hasn't moved in over a week. Is it lost?"
+  max_turns: 6
+expect:
+  db:
+    refunds:
+      - {order: o1, reason: lost_in_transit, channel: agent, amount_cents: 8598, status: issued}
+  conversation:
+    - {assistant_mentions_amount_cents: 8598}
+oracle:
+  - tool: issue_refund
+    args: {order_number: "{o1.number}", reason: lost_in_transit}

@@ -1,0 +1,20 @@
+id: happy-policy-question
+title: A policy question answered from the help center
+category: happy_path
+tags: [help_center]
+ci: true
+fixtures:
+  customers:
+    - {ref: me, name: Owen Fischer}
+session_customer: me
+customer:
+  persona: "Careful shopper comparing options before buying a refurbished laptop."
+  goal: "Learn how long you would have to return a refurbished item."
+  constraints:
+    - "You haven't bought anything yet, so you have no order number."
+  first_message: "Before I buy a refurbished laptop: how long would I have to return it if I don't like it?"
+  max_turns: 3
+expect:
+  db: {}
+  conversation:
+    - {assistant_mentions: "15 days"}

@@ -9,7 +9,7 @@
 | [0005](0005-append-only-transcript.md) | Append-only transcript with raw provider payloads | Accepted |
 | [0006](0006-policy-outcomes-are-data.md) | Policy outcomes are data; failures are errors | Accepted |
 | 0007 | Turns run in the API process under a Redis single-flight lock | Planned (Phase 5) |
-| 0008 | Eval trials run on cloned template databases with ephemeral MCP servers | Planned (Phase 4) |
+| [0008](0008-eval-trials-on-cloned-databases.md) | Eval trials run on cloned template databases with their own MCP app | Accepted |
 | [0009](0009-retrieval-vector-search.md) | Help-center retrieval uses local embeddings (vector search) | Accepted |
 | 0010 | Phoenix for tracing | Planned (Phase 5) |
 | 0011 | Deployment on one VM with Compose and Caddy | Planned (Phase 8) |

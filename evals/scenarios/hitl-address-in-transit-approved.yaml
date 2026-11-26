@@ -1,0 +1,41 @@
+id: hitl-address-in-transit-approved
+title: Reroute a package that is already in transit; the operator approves
+category: hitl
+tags: [address, approval]
+fixtures:
+  customers:
+    - {ref: me, name: Priya Raman}
+  orders:
+    - ref: o1
+      customer: me
+      status: in_transit
+      last_scan_days_ago: 1
+      lines:
+        - {sku: TAB-SLATE11, quantity: 1}
+session_customer: me
+customer:
+  persona: "Organized, a little stressed about the move."
+  goal: "Have order {o1.number} delivered to your new address: 75 Harbor View Road, Portland, ME 04101."
+  known_facts:
+    - "Your order number is {o1.number}."
+    - "Your new address is 75 Harbor View Road, Portland, ME 04101, United States."
+  constraints:
+    - "If asked to confirm the change, say yes."
+    - "Once you're told the change is approved or done, thank them and end the chat."
+  first_message: "Can you change the delivery address for order {o1.number}? I've moved to 75 Harbor View Road, Portland, ME 04101."
+  max_turns: 6
+operator:
+  decision: approve
+  note: "Carrier accepted the reroute."
+expect:
+  db:
+    orders:
+      - order: o1
+        shipping_address: {line1: "75 Harbor View Road", city: Portland, state: ME, postal_code: "04101"}
+    approvals:
+      - {order: o1, action: change_address, status: executed}
+oracle:
+  - tool: update_shipping_address
+    args:
+      order_number: "{o1.number}"
+      address: {recipient_name: "{me.name}", line1: "75 Harbor View Road", city: Portland, state: ME, postal_code: "04101", country: US}

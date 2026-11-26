@@ -34,6 +34,7 @@ from relay.agent.providers.base import (
     ToolCall,
     ToolUseStarted,
     Usage,
+    is_infrastructure,
 )
 from relay.agent.transcript import (
     AssistantText,
@@ -117,7 +118,10 @@ class OpenAIProvider:
         try:
             response = await self.client.responses.create(**self.build_params(request))
         except APIError as error:
-            raise ProviderError(f"OpenAI API error: {error}") from error
+            status = getattr(error, "status_code", None)
+            raise ProviderError(
+                f"OpenAI API error: {error}", infrastructure=is_infrastructure(status)
+            ) from error
 
         items = [echo_form(item) for item in response.output]
         text_parts: list[str] = []

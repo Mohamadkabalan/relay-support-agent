@@ -1,0 +1,29 @@
+id: change-of-mind-cancel-before-confirm
+title: Starts a return, then keeps the item before confirming
+category: change_of_mind
+tags: [return]
+fixtures:
+  customers:
+    - {ref: me, name: Ines Duarte}
+  orders:
+    - ref: o1
+      customer: me
+      status: delivered
+      delivered_days_ago: 7
+      lines:
+        - {sku: AUD-BUDSL, quantity: 1}
+session_customer: me
+customer:
+  persona: "Indecisive but polite."
+  goal: "Ask about returning the earbuds from order {o1.number}, then decide to keep them."
+  known_facts:
+    - "Your order number is {o1.number}."
+  constraints:
+    - "When the assistant asks you to confirm the return, say you've changed your mind and will keep the earbuds."
+    - "After that, thank the assistant and end the chat."
+  first_message: "I think I want to return the earbuds from order {o1.number}."
+  max_turns: 5
+expect:
+  db: {}
+  conversation:
+    - {assistant_mentions: "Buds Lite"}

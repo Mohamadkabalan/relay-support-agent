@@ -53,6 +53,7 @@ class Fail:
     """A step that fails the way an API error does after the SDK's retries."""
 
     message: str = "scripted provider error"
+    infrastructure: bool = False
 
 
 @dataclass
@@ -106,7 +107,7 @@ class ScriptedProvider:
         if callable(step):
             step = step(sent)
         if isinstance(step, Fail):
-            raise ProviderError(step.message)
+            raise ProviderError(step.message, infrastructure=step.infrastructure)
 
         stop = step.stop or (Stop.TOOL_USE if step.calls else Stop.END_TURN)
         blocks: list[dict[str, Any]] = []

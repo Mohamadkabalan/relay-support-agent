@@ -1,0 +1,37 @@
+id: happy-late-delivery-refund
+title: An order arrived 4 days late; refund the shipping fee
+category: happy_path
+tags: [refund, mechanism]
+ci: true
+fixtures:
+  customers:
+    - {ref: me, name: Alex Brennan}
+  orders:
+    - ref: o1
+      customer: me
+      status: delivered
+      delivered_days_ago: 2
+      late_by_days: 4
+      shipping_cents: 599
+      lines:
+        - {sku: AUD-BUDS2, quantity: 1}
+session_customer: me
+customer:
+  persona: "Frustrated: needed the earbuds for a trip and they came late."
+  goal: "Get compensation for order {o1.number} arriving four days after the promised date."
+  known_facts:
+    - "Your order number is {o1.number}."
+    - "It arrived four days later than promised."
+  constraints:
+    - "If the assistant offers a refund and asks you to confirm, say yes."
+  first_message: "Order {o1.number} showed up four days late and I missed my trip with it. What are you going to do about it?"
+  max_turns: 6
+expect:
+  db:
+    refunds:
+      - {order: o1, reason: late_delivery, channel: agent, amount_cents: 599, status: issued}
+  conversation:
+    - {assistant_mentions_amount_cents: 599}
+oracle:
+  - tool: issue_refund
+    args: {order_number: "{o1.number}", reason: late_delivery}

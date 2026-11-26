@@ -108,15 +108,39 @@ smoke: .env ## One live refund conversation with Claude, checked end to end (nee
 	$(COMPOSE) up --detach --wait postgres redis
 	cd backend && $(TEST_ENV) uv run relay smoke
 
+# ---------------------------------------------------------------- evals
+
+# The harness runs on the host, like the tests, against the compose Postgres. Live targets print
+# a cost estimate and ask first (YES=1 skips the question). The key travels in the environment.
+EVAL := cd backend && $(TEST_ENV) uv run relay eval
+EVAL_FLAGS = $(if $(YES),--yes) $(if $(RESUME),--resume $(RESUME))
+
+.PHONY: eval eval-quick eval-selftest eval-mechanism eval-scenarios
+eval: export ANTHROPIC_API_KEY := $(ANTHROPIC_API_KEY)
+eval: .env ## Run the eval suite with the live agent: SUBSET=v1 K=3 [YES=1] [RESUME=dir]
+	$(COMPOSE) up --detach --wait postgres redis
+	$(EVAL) run --subset $(or $(SUBSET),v1) --k $(or $(K),3) $(EVAL_FLAGS)
+
+eval-quick: export ANTHROPIC_API_KEY := $(ANTHROPIC_API_KEY)
+eval-quick: .env ## The CI eval subset, one trial each [YES=1]
+	$(COMPOSE) up --detach --wait postgres redis
+	$(EVAL) run --subset ci --k 1 $(EVAL_FLAGS)
+
+eval-selftest: .env ## Eval harness self-tests: schema, policy, oracle, null agent, errors (no model calls)
+	$(COMPOSE) up --detach --wait postgres redis
+	$(EVAL) selftest
+
+eval-mechanism: export ANTHROPIC_API_KEY := $(ANTHROPIC_API_KEY)
+eval-mechanism: .env ## Mechanism check: without the confirmation rule, blocked commits must rise [YES=1]
+	$(COMPOSE) up --detach --wait postgres redis
+	$(EVAL) mechanism $(if $(YES),--yes)
+
+eval-scenarios: ## Regenerate evals/SCENARIOS.md from the scenario files
+	cd backend && uv run relay eval list --markdown > ../evals/SCENARIOS.md
+
 # ---------------------------------------------------------------- later phases
 
-.PHONY: eval eval-quick eval-selftest eval-label demo-reset
-eval: ## Full eval suite, k=3, Markdown + JSON report (Phase 4)
-	@$(call not_yet,4)
-eval-quick: ## The CI eval subset, one trial each (Phase 4)
-	@$(call not_yet,4)
-eval-selftest: ## Eval harness self-tests, no model calls (Phase 4)
-	@$(call not_yet,4)
+.PHONY: eval-label demo-reset
 eval-label: ## Hand-label transcripts to validate the judge (Phase 7)
 	@$(call not_yet,7)
 demo-reset: ## What the nightly demo reset runs (Phase 8)

@@ -1,0 +1,43 @@
+id: hitl-refund-approved
+title: Cracked headphones, a refund over the limit, and the operator approves
+category: hitl
+tags: [refund, approval, mechanism]
+fixtures:
+  customers:
+    - {ref: me, name: Dana Whitfield}
+  orders:
+    - ref: o1
+      customer: me
+      status: delivered
+      delivered_days_ago: 8
+      lines:
+        - {sku: AUD-ANC700, quantity: 1}
+session_customer: me
+customer:
+  persona: "Calm but busy professional. Short messages, no greetings."
+  goal: "Get your money back for the headphones in order {o1.number}. The headband was cracked when you opened the box."
+  known_facts:
+    - "Your order number is {o1.number}."
+    - "The headband was cracked when you opened the box."
+  hidden_facts:
+    - "You still have the original box."
+  constraints:
+    - "You do not want a replacement."
+    - "If asked to confirm the refund, say yes."
+    - "Once you're told the refund is approved or issued, thank them and end the chat."
+  first_message: "Hi, my headphones from order {o1.number} arrived with a cracked headband. I want a refund."
+  max_turns: 6
+operator:
+  decision: approve
+  note: "Approved. Sorry about that."
+expect:
+  db:
+    refunds:
+      - {order: o1, amount_cents: 34999, reason: damaged_or_defective, status: issued}
+    approvals:
+      - {order: o1, action: issue_refund, status: executed}
+  conversation:
+    - {assistant_mentions_amount_cents: 34999}
+oracle:
+  - tool: issue_refund
+    args: {order_number: "{o1.number}", reason: damaged_or_defective, lines: [{line: 1, quantity: 1}]}

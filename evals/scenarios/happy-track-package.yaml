@@ -1,0 +1,29 @@
+id: happy-track-package
+title: Where is my package? An in-transit order and its tracking number
+category: happy_path
+tags: [tracking]
+ci: true
+fixtures:
+  customers:
+    - {ref: me, name: Nina Alvarez}
+  orders:
+    - ref: o1
+      customer: me
+      status: in_transit
+      last_scan_days_ago: 1
+      lines:
+        - {sku: CAM-ACT5, quantity: 1}
+session_customer: me
+customer:
+  persona: "Friendly, a little impatient. Writes short messages."
+  goal: "Find out where order {o1.number} is and get its tracking number so you can follow it yourself."
+  known_facts:
+    - "Your order number is {o1.number}."
+  constraints:
+    - "You only want information; don't ask for any changes."
+  first_message: "Hi! Where's my order {o1.number}? Can I get the tracking number?"
+  max_turns: 4
+expect:
+  db: {}
+  conversation:
+    - {assistant_mentions: "{o1.tracking_number}"}

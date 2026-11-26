@@ -1,7 +1,7 @@
 """The `relay` command-line tool.
 
-Commands so far: `api serve`, `mcp serve|token|call`, `chat`, `smoke`, `db`, `seed`, `kb` and
-`version`. Later phases add `eval` and `demo` (PLAN.md §13).
+Commands so far: `api serve`, `mcp serve|token|call`, `chat`, `smoke`, `eval`, `db`, `seed`,
+`kb` and `version`. Phase 8 adds `demo` (PLAN.md §13).
 """
 
 import asyncio
@@ -24,6 +24,7 @@ from relay.db import migrate
 from relay.db.session import engine_from_settings, make_sessionmaker
 from relay.domain.money import format_cents
 from relay.domain.policy_config import default_policy
+from relay.evals.cli import eval_app
 from relay.kb.embeddings import Embedder, FastEmbedder
 from relay.mcp_server.identity import UnknownCustomerError, bind_customer
 from relay.mcp_server.server import serve_stdio
@@ -39,6 +40,7 @@ app.add_typer(api_app, name="api")
 app.add_typer(mcp_app, name="mcp")
 app.add_typer(db_app, name="db")
 app.add_typer(kb_app, name="kb")
+app.add_typer(eval_app, name="eval")
 
 Host = Annotated[str, typer.Option(help="Interface to bind. Containers pass 0.0.0.0.")]
 Reload = Annotated[bool, typer.Option(help="Restart when source files change (development).")]

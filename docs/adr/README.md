@@ -12,6 +12,6 @@
 | [0008](0008-eval-trials-on-cloned-databases.md) | Eval trials run on cloned template databases with their own MCP app | Accepted |
 | [0009](0009-retrieval-vector-search.md) | Help-center retrieval uses local embeddings (vector search) | Accepted |
 | [0010](0010-phoenix-for-tracing.md) | Phoenix for tracing, with redaction in the export path | Accepted |
-| 0011 | Deployment on one VM with Compose and Caddy | Planned (Phase 8) |
+| [0011](0011-one-vm-with-compose-and-caddy.md) | Deployment on one VM with Compose and Caddy | Accepted |
 
 New ADRs copy the format of [0001](0001-record-architecture-decisions.md): Context, Decision, Consequences.

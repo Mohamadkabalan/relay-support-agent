@@ -1,7 +1,7 @@
 """The `relay` command-line tool.
 
-Commands so far: `api serve`, `mcp serve|token|call`, `operator hash-password`, `chat`, `smoke`,
-`eval`, `db`, `seed`, `kb` and `version`. Phase 8 adds `demo` (PLAN.md §13).
+Commands: `api serve|openapi`, `mcp serve|token|call`, `operator hash-password`, `chat`, `smoke`,
+`eval`, `db`, `seed`, `demo reset`, `kb` and `version`.
 """
 
 import asyncio
@@ -11,7 +11,7 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 import uvicorn
@@ -37,12 +37,14 @@ mcp_app = typer.Typer(help="The MCP server.", no_args_is_help=True)
 db_app = typer.Typer(help="Database migrations.", no_args_is_help=True)
 kb_app = typer.Typer(help="The help-center knowledge base.", no_args_is_help=True)
 operator_app = typer.Typer(help="The operator login.", no_args_is_help=True)
+demo_app = typer.Typer(help="The public demo.", no_args_is_help=True)
 app.add_typer(api_app, name="api")
 app.add_typer(mcp_app, name="mcp")
 app.add_typer(db_app, name="db")
 app.add_typer(kb_app, name="kb")
 app.add_typer(eval_app, name="eval")
 app.add_typer(operator_app, name="operator")
+app.add_typer(demo_app, name="demo")
 
 Host = Annotated[str, typer.Option(help="Interface to bind. Containers pass 0.0.0.0.")]
 Reload = Annotated[bool, typer.Option(help="Restart when source files change (development).")]
@@ -312,9 +314,20 @@ def _run[T](work: Callable[[AsyncEngine], Awaitable[T]]) -> T:
 
 @db_app.command("upgrade")
 def db_upgrade(revision: Annotated[str, typer.Argument()] = "head") -> None:
-    """Apply migrations up to REVISION (default: the latest)."""
+    """Apply migrations up to REVISION (default: the latest), then grant the application role.
+
+    With RELAY_APP_DB_PASSWORD set, the role in RELAY_APP_DB_ROLE (default relay_app) is created
+    or updated and granted data access to every table, without DDL (PLAN.md §11).
+    """
+    from relay.db.roles import ensure_app_role
+
+    settings = get_settings()
     _run(lambda engine: migrate.upgrade(engine, revision))
     typer.echo(f"Database at {_run(migrate.current_revision)}.")
+    if settings.app_db_password is not None:
+        password = settings.app_db_password.get_secret_value()
+        _run(lambda engine: ensure_app_role(engine, settings.app_db_role, password))
+        typer.echo(f"Role {settings.app_db_role}: data access granted, no DDL.")
 
 
 @db_app.command("downgrade")
@@ -504,3 +517,49 @@ def kb_eval(
     typer.echo(markdown)
     if output is not None:
         output.write_text(markdown + "\n", encoding="utf-8")
+
+
+@demo_app.command("reset")
+def demo_reset(
+    yes: Annotated[bool, typer.Option("--yes", help="Confirm: this deletes every row.")] = False,
+    seed: Annotated[int, typer.Option(help="Random seed.")] = 42,
+    embeddings: Annotated[bool, typer.Option(help="Embed the help articles.")] = True,
+) -> None:
+    """The nightly reset: wipe the demo, seed it again for today, and sign everyone out.
+
+    Deletes every customer, order, conversation, approval and audit row. It refuses to run
+    unless RELAY_DEMO_MODE is on, and needs --yes. Spend counters in Redis are kept.
+    """
+    from redis.asyncio import Redis
+
+    from relay.seed.reset import reset_demo
+
+    settings = get_settings()
+    if not settings.demo_mode:
+        typer.echo("relay demo reset: refused, RELAY_DEMO_MODE is off (not a demo).", err=True)
+        raise typer.Exit(1)
+    if not yes:
+        typer.echo("relay demo reset: this deletes all data; pass --yes to confirm.", err=True)
+        raise typer.Exit(2)
+
+    async def work(engine: AsyncEngine) -> Any:
+        redis = Redis.from_url(str(settings.redis_url))
+        try:
+            return await reset_demo(
+                engine,
+                redis,
+                prefix=settings.redis_prefix,
+                seed=seed,
+                now=datetime.now(UTC).replace(microsecond=0),
+                policy=default_policy(),
+                embedder=_embedder(embeddings),
+            )
+        finally:
+            await redis.aclose()
+
+    outcome = _run(work)
+    typer.echo(
+        f"Demo reset: seeded at {outcome.seed.seeded_now.isoformat()} in "
+        f"{outcome.seed.seconds:.1f} s (data {outcome.seed.data_hash[:12]}); "
+        f"{outcome.keys_deleted} session and event keys deleted."
+    )

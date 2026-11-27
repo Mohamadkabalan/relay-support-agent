@@ -1,10 +1,11 @@
 # syntax=docker/dockerfile:1
+# Base images are pinned by digest; Dependabot proposes updates (tag and digest together).
 # One image for the API, the MCP server and the `relay` CLI.
 # Stages: builder (locked prod deps, embedding model) -> runtime (default target); dev adds dev
 # deps and an editable install so compose.dev.yaml can bind-mount src/ and hot-reload.
 
-ARG PYTHON_IMAGE=python:3.14.10-slim-trixie
-ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.13.9
+ARG PYTHON_IMAGE=python:3.14.10-slim-trixie@sha256:22eafb370920ad8b429e0aec3fff433e0669968519f5d60469d83729c138b28b
+ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.13.9@sha256:d3b601f0c7b118bc1753febf7c41cc80981df678445e0254284eecf84db79a7d
 
 FROM ${UV_IMAGE} AS uv
 

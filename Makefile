@@ -58,7 +58,7 @@ clean: ## Stop the stack and delete its data volumes
 
 # ---------------------------------------------------------------- quality
 
-.PHONY: test test-unit lint fmt hooks
+.PHONY: test test-unit lint fmt hooks audit
 test: .env ## Run the backend tests with the domain coverage gate (starts Postgres and Redis)
 	$(COMPOSE) up --detach --wait postgres redis
 	cd backend && $(TEST_ENV) uv run pytest --cov=relay.domain --cov-report=term --cov-fail-under=90
@@ -75,6 +75,11 @@ fmt: ## Format and auto-fix the backend
 
 hooks: ## Install the pre-commit git hooks
 	$(PRE_COMMIT) install
+
+audit: frontend/node_modules ## Known vulnerabilities in the locked Python and npm dependencies (CI runs it too)
+	cd backend && uv export --frozen --no-dev --no-emit-project --format requirements-txt \
+		| uvx pip-audit@2.10.1 --strict --disable-pip --no-deps -r /dev/stdin
+	cd frontend && npm audit --omit=dev --audit-level=high
 
 # ---------------------------------------------------------------- data
 
@@ -116,7 +121,7 @@ approval-flow: ## The approval flow through the HTTP API with curl (needs make u
 
 # ---------------------------------------------------------------- frontend
 
-PLAYWRIGHT_IMAGE := mcr.microsoft.com/playwright:v1.65.1-noble
+PLAYWRIGHT_IMAGE := mcr.microsoft.com/playwright:v1.65.1-noble@sha256:1507cbfc550a63a6b7396791ca4f00df17beb56342d2447b3f106c306f525579
 
 .PHONY: api-types e2e
 api-types: ## Regenerate the frontend's typed API client from the backend's OpenAPI document
@@ -213,15 +218,11 @@ eval-judge-check: export ANTHROPIC_API_KEY := $(ANTHROPIC_API_KEY)
 eval-judge-check: .env ## Known negatives the judge must fail (5 model calls) [YES=1]
 	$(EVAL) judge-check $(if $(YES),--yes)
 
-# ---------------------------------------------------------------- later phases
+# ---------------------------------------------------------------- demo
 
 .PHONY: demo-reset
-demo-reset: ## What the nightly demo reset runs (Phase 8)
-	@$(call not_yet,8)
-
-define not_yet
-echo "make $@ is not implemented yet: it arrives in Phase $(1) (PLAN.md §13)." >&2; exit 1
-endef
+demo-reset: .env ## What the nightly timer runs: wipe, re-seed for today, sign everyone out (deletes all data)
+	$(COMPOSE) run --rm migrate relay demo reset --yes
 
 # ---------------------------------------------------------------- files
 

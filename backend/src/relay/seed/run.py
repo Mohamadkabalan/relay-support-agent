@@ -38,19 +38,21 @@ async def seed_database(
 ) -> SeedOutcome:
     started = time.perf_counter()
     async with make_sessionmaker(engine)() as session, session.begin():
-        if not await is_empty(session):
-            if not reset:
-                existing = await session.scalar(
-                    select(SeedRun).order_by(SeedRun.created_at.desc()).limit(1)
-                )
-                return SeedOutcome(
-                    seeded=False,
-                    seed=existing.seed if existing else -1,
-                    seeded_now=existing.seeded_now if existing else now,
-                    data_hash=existing.data_hash if existing else "",
-                    seconds=time.perf_counter() - started,
-                )
+        if reset:
+            # Always, even with no customers: operators, conversations or help articles left
+            # without them would otherwise survive a reset.
             await wipe(session)
+        elif not await is_empty(session):
+            existing = await session.scalar(
+                select(SeedRun).order_by(SeedRun.created_at.desc()).limit(1)
+            )
+            return SeedOutcome(
+                seeded=False,
+                seed=existing.seed if existing else -1,
+                seeded_now=existing.seeded_now if existing else now,
+                data_hash=existing.data_hash if existing else "",
+                seconds=time.perf_counter() - started,
+            )
 
         data = generate(seed=seed, now=now, policy=policy, customers=customers, orders=orders)
         await insert(session, data)

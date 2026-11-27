@@ -1,9 +1,10 @@
 # syntax=docker/dockerfile:1
+# Base images are pinned by digest; Dependabot proposes updates (tag and digest together).
 # Stages: deps (npm ci) -> builder (next build, standalone output) -> runtime (default target).
 # dev runs `next dev`; compose.dev.yaml bind-mounts the source for hot reload.
 # Debian slim rather than Alpine: same libc as most dev machines, so npm's native binaries match.
 
-ARG NODE_IMAGE=node:26.13.1-trixie-slim
+ARG NODE_IMAGE=node:26.13.1-trixie-slim@sha256:abe7e5a82b61a8ef67b315b85497c9e65173387ccf2f4a029248184b8e020be5
 
 FROM ${NODE_IMAGE} AS deps
 WORKDIR /app

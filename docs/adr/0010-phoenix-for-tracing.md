@@ -21,6 +21,6 @@ An operator (and a reviewer) needs to see what one conversation did: every turn,
 - A test runs a PII-heavy conversation through the redacting exporter and finds no email, phone number, street address, ZIP code or card number in any exported span.
 - Pattern redaction is broad: it may mask harmless text that looks like an address. That costs nothing in a trace.
 - Names in free text are not detected; they appear in redacted previews. The `none` mode removes previews entirely.
-- Phoenix 22 turns on authentication for any non-loopback bind unless `PHOENIX_ENABLE_AUTH` is set, and then answers our exporter with 401. The local stack, published on 127.0.0.1 only, sets it to `false`. Production (Phase 8) enables it and passes an API key through `OTEL_EXPORTER_OTLP_HEADERS`, which the exporter reads itself.
+- Phoenix 22 turns on authentication for any non-loopback bind unless `PHOENIX_ENABLE_AUTH` is set, and then answers our exporter with 401. The local stack, published on 127.0.0.1 only, sets it to `false`. Production does the same: Phoenix is published on the VM's loopback only and reached through an SSH tunnel (changed on 2026-11-27 by [ADR-0011](0011-one-vm-with-compose-and-caddy.md); the plan here had been authentication plus an exporter API key).
 - Switching to another OpenTelemetry backend changes one endpoint, not the instrumentation.
 - Database spans are not instrumented (that needs a beta instrumentation package); query time shows up inside the tool-call spans.

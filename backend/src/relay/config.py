@@ -56,6 +56,12 @@ class Settings(BaseSettings):
     # Seconds each dependency gets to answer a readiness probe.
     readiness_timeout_s: float = Field(default=2.0, gt=0)
 
+    # The role the API and the MCP server connect as (no DDL, append-only audit log; §11).
+    # `relay db upgrade`, run by the migrate job as the owner, creates and grants it when the
+    # password is set. Their own DATABASE_URL then names this role.
+    app_db_role: str = Field(default="relay_app", pattern=r"^[a-z_][a-z0-9_]{0,62}$")
+    app_db_password: SecretStr | None = Field(default=None, min_length=16)
+
     # Uvicorn trusts X-Forwarded-* headers only from these addresses. Compose sets "*" because
     # the API is reachable only through Caddy on the internal network.
     forwarded_allow_ips: str = "127.0.0.1"
@@ -166,7 +172,9 @@ class Settings(BaseSettings):
             return None
         return value
 
-    @field_validator("operator_password_hash", "otel_endpoint", "phoenix_url", mode="before")
+    @field_validator(
+        "operator_password_hash", "otel_endpoint", "phoenix_url", "app_db_password", mode="before"
+    )
     @classmethod
     def _blank_is_unset(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
@@ -180,6 +188,7 @@ class Settings(BaseSettings):
         for name, secret in (
             ("RELAY_MCP_JWT_SECRET", self.mcp_jwt_secret),
             ("RELAY_SESSION_SECRET", self.session_secret),
+            ("RELAY_APP_DB_PASSWORD", self.app_db_password),
         ):
             if secret and DEV_SECRET_MARKER in secret.get_secret_value():
                 raise ValueError(f"{name} still has the development value")

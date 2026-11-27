@@ -1,0 +1,12 @@
+# The nightly demo reset (PLAN.md §12): wipe, re-seed for today, sign everyone out.
+# Installed by the first deploy (docs/DEPLOY.md); triggered by relay-demo-reset.timer.
+[Unit]
+Description=Relay demo reset
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/relay
+ExecStart=/usr/bin/docker compose -f compose.prod.yaml run --rm -T migrate relay demo reset --yes
+TimeoutStartSec=15min

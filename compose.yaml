@@ -6,7 +6,9 @@ name: relay
 x-backend-env: &backend-env
   RELAY_ENV: ${RELAY_ENV:-dev}
   RELAY_LOG_LEVEL: ${RELAY_LOG_LEVEL:-INFO}
-  DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-relay}:${POSTGRES_PASSWORD:-relay-dev-only}@postgres:5432/${POSTGRES_DB:-relay}
+  # The API and the MCP server connect as the application role: data access, no DDL, an
+  # append-only audit log (PLAN.md §11). Only the migrate job uses the owner (below).
+  DATABASE_URL: postgresql+asyncpg://${RELAY_APP_DB_ROLE:-relay_app}:${RELAY_APP_DB_PASSWORD:-dev-only-app-db-password}@postgres:5432/${POSTGRES_DB:-relay}
   REDIS_URL: redis://redis:6379/0
   RELAY_MCP_JWT_SECRET: ${RELAY_MCP_JWT_SECRET:-dev-only-mcp-turn-token-secret-change-me}
   # Traces go to Phoenix over OTLP/HTTP, redacted on the way out (PLAN.md §10).
@@ -37,7 +39,7 @@ x-backend: &backend
 
 services:
   postgres:
-    image: pgvector/pgvector:0.8.7-pg18-trixie
+    image: pgvector/pgvector:0.8.7-pg18-trixie@sha256:ab49524d18df7200b74ac9a475e1db6297fc1eb57da4c214c63d10ecc4b754fa
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-relay}
@@ -57,7 +59,7 @@ services:
       start_period: 10s
 
   redis:
-    image: redis:8.10.3-alpine
+    image: redis:8.10.3-alpine@sha256:7958cfbb9d152f87dadfbc89f1b0b15938f0b81ff8982feb327476f4911935c3
     restart: unless-stopped
     volumes:
       - redis-data:/data
@@ -70,7 +72,7 @@ services:
       retries: 20
 
   phoenix:
-    image: arizephoenix/phoenix:version-22.0.1-nonroot
+    image: arizephoenix/phoenix:version-22.0.1-nonroot@sha256:53bbfd959a5fa32680bf81607d4ba548d87a87133307c3feb9d2076e70b597ea
     restart: unless-stopped
     environment:
       # Traces live in their own database on the same Postgres server (created by initdb).
@@ -103,6 +105,12 @@ services:
     restart: "no"
     environment:
       <<: *backend-env
+      # The owner: migrations, the seed and the nightly reset. `relay db upgrade` then creates
+      # or updates the application role with this password and grants it.
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-relay}:${POSTGRES_PASSWORD:-relay-dev-only}@postgres:5432/${POSTGRES_DB:-relay}
+      RELAY_APP_DB_ROLE: ${RELAY_APP_DB_ROLE:-relay_app}
+      RELAY_APP_DB_PASSWORD: ${RELAY_APP_DB_PASSWORD:-dev-only-app-db-password}
+      RELAY_DEMO_MODE: ${RELAY_DEMO_MODE:-true}  # `make demo-reset` refuses without it
     depends_on:
       postgres:
         condition: service_healthy
@@ -179,7 +187,7 @@ services:
       start_period: 10s
 
   caddy:
-    image: caddy:2.11.9-alpine
+    image: caddy:2.11.9-alpine@sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f0
     restart: unless-stopped
     ports:
       - "127.0.0.1:${RELAY_HTTP_PORT:-8080}:8080"

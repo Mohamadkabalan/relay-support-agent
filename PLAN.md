@@ -1,6 +1,6 @@
 # Relay: design and implementation plan
 
-> **Status:** decisions D1–D4 settled on 2026-11-22. Phases 0 to 6 are merged on `main`. Phase 7 (the full eval suite) is built and passes its self-tests, but no eval run against the model has happened yet (no API key so far), so this document contains no eval results. Phase 8 is next.
+> **Status:** decisions D1–D4 settled on 2026-11-22. Phases 0 to 7 are merged on `main`, and Phase 8 (hardening, deployment, docs) is built. Nothing has been measured against the model yet (no API key so far), so this document contains no eval results, and the demo has not been deployed to a VM.
 metrics and scenario drafts), a key-free scripted demo agent, a typed API client and Playwright smoke tests)
 > Every version, model ID and API behavior in this plan was checked on 2026-11-22 against PyPI, npm, Docker Hub, the Anthropic docs (platform.claude.com/docs) and the MCP Python SDK docs (py.sdk.modelcontextprotocol.io). The cost figures in §9.12 are pre-implementation estimates and are labeled as such. There are no eval results yet, and none appear in this document.
 
@@ -1117,7 +1117,7 @@ One click on "Create eval scenario" in a conversation's replay sends the transcr
 The target is one Hetzner Cloud VM running the same Compose stack behind Caddy. Fly.io or Railway would split the stack into separately managed Postgres, Redis and services, each priced on its own, while our compose file runs unchanged on a single VM.
 
 - **Host:** 4 GB of RAM, Ubuntu LTS, Docker Engine with Compose. The firewall opens SSH to the operator's IP only, and ports 80 and 443 publicly.
-- **`compose.prod.yaml`** pulls images from GHCR and uses no bind mounts. Caddy provides automatic HTTPS for the domain. Phoenix sits behind Caddy basic auth, or is reachable only through an SSH tunnel.
+- **`compose.prod.yaml`** pulls images from GHCR and mounts no source; only the Caddyfile and the Postgres init script go in, as configs. Caddy provides automatic HTTPS for the domain. Phoenix is published on the VM's loopback only and reached through an SSH tunnel (decided in Phase 8, ADR-0011).
 - **Release:** CI builds and pushes images when a release is tagged. `deploy/deploy.sh` runs `docker compose pull && docker compose up -d` over SSH, then a smoke check.
 - **Nightly reset:** a systemd timer runs `relay demo reset` at 04:00 UTC. It truncates conversations and demo clones and re-seeds relative to the current time.
 - **Hard daily spend cap:** before each model call, the API reserves the worst-case cost of that call in Redis (estimated input plus `max_tokens` at the output price), and reconciles with the actual usage afterwards. When a reservation would exceed `RELAY_DAILY_SPEND_CAP_USD`, the chat replies with a fixed "the demo is paused until 00:00 UTC" message and makes no model call. As a backstop, the demo uses a dedicated Claude Console workspace with its own spend limit.
@@ -1444,6 +1444,27 @@ Each phase ends the same way: every test and linter passes, the change is review
 
 **Manual check:** the deploy itself on the production VM and domain.
 
+**Built** (2026-11-27). These choices were made along the way:
+
+- **Files:** `compose.prod.yaml`, `deploy/Caddyfile`, `deploy/deploy.sh`, `deploy/env.prod.example`, `deploy/systemd/relay-demo-reset.{service,timer}`, `.github/workflows/release.yml`, `relay/db/roles.py`, `relay/seed/reset.py` (`relay demo reset`), docs/DEPLOY.md, docs/SECURITY.md, docs/AGENT_DESIGN.md and ADR-0011.
+- **A database role without DDL (new):** the API and the MCP server now connect as `relay_app`, with data access only. On `audit_log` and `messages` it can only SELECT and INSERT, which also stops TRUNCATE, something the triggers can't. `relay db upgrade` (the migrate job, as the owner) creates or updates the role and grants it after every migration, so existing development volumes pick it up on the next `make up`. Evals, tests and the seed keep using the owner.
+- **Digest pins:** base images in both Dockerfiles, the service images in both compose files, and the CI and Playwright images. Dependabot updates tags and digests together.
+- **Phoenix in production** stays on the VM's loopback and is reached through an SSH tunnel, with its login off. This replaces the plan of authentication plus an exporter API key (amended in ADR-0010): that key can only be created in Phoenix's UI after first start, before which the exporters would fail.
+- **Caddy** adds HSTS, a same-origin CSP (`script-src 'self' 'unsafe-inline'`, because Next.js hydrates with inline scripts), no framing, `nosniff`, a 1 MB body limit at the edge, and HTTP/3.
+- **The nightly reset** is `seed --reset` relative to the current time, plus deleting the Redis session and event-stream keys; spend counters and rate windows are kept. It refuses to run unless `RELAY_DEMO_MODE` is on and `--yes` is given.
+- **Fixed:** `relay seed --reset` used to wipe only when customers existed, so operators or conversations left without customers survived a reset. Now `--reset` always wipes.
+- **CI:** `pip-audit` (backend job) and `npm audit --omit=dev` (frontend job), a check that `compose.prod.yaml` is valid with every required value set, and the release workflow.
+- **Measured here (2026-11-27):**
+  - **The production stack, locally:** images built and tagged as a release, `compose.prod.yaml` on `https://localhost` (Caddy's local CA) with throwaway secrets and the key-free demo agent. Every service came up healthy and the migrate job granted the role.
+  - **The browser test against it:** `make e2e`'s Playwright suite with `E2E_BASE_URL=https://localhost` passed 4 of 4 (the refund with operator approval, and the keyboard pass, each at desktop size and 375 px).
+  - **The nightly reset**, run as the timer runs it (`docker compose -f compose.prod.yaml run --rm -T migrate relay demo reset --yes`), took 61 s to seed and deleted 4 session and event keys, and the API stayed ready.
+  - **The app role** was refused TRUNCATE on `audit_log` and CREATE on the schema.
+  - **Audits:** `make audit` found no known vulnerabilities (pip-audit 2.10.1; npm audit, also without `--omit=dev`). `gitleaks git` found no leaks in the 11 commits; `gitleaks dir` flagged only Next.js build keys in gitignored `.next/` output (docs/SECURITY.md).
+- **Not done (needs you):**
+  - The deploy to a real VM and domain, and the checklist in docs/DEPLOY.md.
+  - The release workflow and the new CI steps have only been linted (actionlint), not run on GitHub.
+  - The first acceptance criterion: reproducing the README numbers needs the eval runs that need a key.
+
 ---
 
 ## 14. Risks
@@ -1496,7 +1517,7 @@ All of these are cheap to change.
 .
 ├── PLAN.md  README.md  Makefile  .env.example
 ├── compose.yaml  compose.dev.yaml  compose.prod.yaml
-├── .github/workflows/       ci.yml (lint, types, tests, builds, e2e smoke, eval subset), eval-full.yml (manual)
+├── .github/workflows/       ci.yml (lint, types, tests, audits, builds, e2e smoke, eval gate), release.yml (images to GHCR on a v* tag)
 ├── backend/
 │   ├── pyproject.toml  uv.lock  Dockerfile   (Alembic is configured in pyproject.toml)
 │   ├── src/relay/
@@ -1528,7 +1549,7 @@ All of these are cheap to change.
 │   │                        itself is in relay/evals/judge.py)
 │   ├── baseline.json        written by make eval-baseline from the first full run
 │   └── reports/             <run>/report.md, report.json
-├── deploy/                  Caddyfile, Caddyfile.dev, systemd/, deploy.sh
+├── deploy/                  Caddyfile, Caddyfile.dev, deploy.sh, env.prod.example, systemd/, postgres/initdb
 └── docs/                    mcp.md, api.md, examples/, AGENT_DESIGN.md, EVALS.md, DEPLOY.md, SECURITY.md, adr/
 ```
 
@@ -1581,7 +1602,8 @@ ADRs are written during the phase in which each decision lands.
 | `make mcp-inspect` | Opens the MCP Inspector on the stdio server, as `MCP_CUSTOMER` (default Dana) |
 | `make mcp-call` | Calls one tool over HTTP with a fresh turn token: `make mcp-call TOOL=get_order ARGS='{...}'` |
 | `make approval-flow` | The approval flow through the HTTP API with curl (needs the stack and `ANTHROPIC_API_KEY`) |
-| `make demo-reset` | Does what the nightly timer does |
+| `make demo-reset` | Does what the nightly timer does: wipe, re-seed for today, sign everyone out |
+| `make audit` | `pip-audit` and `npm audit` on the locked dependencies (also in CI) |
 
 ### D. Configuration
 
@@ -1593,6 +1615,8 @@ Selected keys from `.env.example`:
 - Agent: `RELAY_THINKING_PREFIX_MISMATCH` (`error` by default; production `drop_block`), `RELAY_AGENT_FALLBACKS` (server-side refusal fallbacks, on by default). A blank key in `.env` counts as unset.
 - Models: `RELAY_AGENT_MODEL=claude-opus-5-5`, `RELAY_AGENT_EFFORT=medium`, `RELAY_SIM_MODEL=claude-opus-5-5`, `RELAY_SIM_EFFORT=low`, `RELAY_JUDGE_MODEL=claude-sonnet-5-5` and `RELAY_JUDGE_EFFORT=medium` (Phase 7).
 - Infrastructure: `DATABASE_URL`, `REDIS_URL`, `RELAY_MCP_URL`, `RELAY_MCP_JWT_SECRET` (32+ characters; values containing `dev-only` are refused when `RELAY_ENV=prod`), `RELAY_SESSION_SECRET`.
+- Database role (Phase 8): `RELAY_APP_DB_ROLE` (default `relay_app`) and `RELAY_APP_DB_PASSWORD` (16+ characters). The API and the MCP server connect as that role; the migrate job connects as the owner and grants it.
+- Production only (`deploy/env.prod.example`): `RELAY_DOMAIN`, `ACME_EMAIL`, `RELAY_IMAGE_PREFIX`, `RELAY_VERSION`.
 - MCP server: `RELAY_MCP_CUSTOMER` (the customer a stdio server acts for), `RELAY_MCP_ALLOWED_HOSTS`, `RELAY_MCP_MAX_REQUEST_BYTES` (64 KiB).
 - Operator and demo: `RELAY_OPERATOR_EMAIL`, `RELAY_OPERATOR_PASSWORD_HASH` (Argon2, from `relay operator hash-password`; single-quoted in `.env`), `RELAY_DEMO_MODE`, `RELAY_DAILY_SPEND_CAP_USD` (default 20), `RELAY_STORE_NAME`.
 - Sessions and limits (Phase 5): `RELAY_SESSION_SECRET`, `RELAY_COOKIE_SECURE` (off for the local http stack; refused off in prod), `RELAY_ALLOWED_ORIGINS`, and the limits of §15 (`RELAY_MESSAGES_PER_MINUTE` and so on).

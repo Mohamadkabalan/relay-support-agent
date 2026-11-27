@@ -1,0 +1,227 @@
+# The production stack on one VM (PLAN.md §12, docs/DEPLOY.md). Unlike compose.yaml it builds
+# nothing: the backend and web images come from GHCR at RELAY_VERSION, and the service images are
+# pinned by digest. No source is mounted; only the Caddyfile and the Postgres init script are
+# passed in as configs. Run it with `docker compose -f compose.prod.yaml ...` next to its `.env`.
+#
+# Published ports: 80 and 443 (Caddy) to the internet, and Phoenix on the VM's loopback only, for
+# an SSH tunnel. Postgres, Redis, the API and the MCP server are internal.
+name: relay
+
+x-images:
+  backend: &backend-image ${RELAY_IMAGE_PREFIX:?set RELAY_IMAGE_PREFIX, e.g. ghcr.io/you}/relay-backend:${RELAY_VERSION:?set RELAY_VERSION, e.g. 1.0.0}
+  web: &web-image ${RELAY_IMAGE_PREFIX}/relay-web:${RELAY_VERSION}
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+x-hardening: &hardening
+  restart: unless-stopped
+  read_only: true
+  tmpfs:
+    - /tmp
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  logging: *logging
+
+x-backend-env: &backend-env
+  RELAY_ENV: prod
+  RELAY_LOG_LEVEL: ${RELAY_LOG_LEVEL:-INFO}
+  DATABASE_URL: postgresql+asyncpg://${RELAY_APP_DB_ROLE:-relay_app}:${RELAY_APP_DB_PASSWORD:?set RELAY_APP_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-relay}
+  REDIS_URL: redis://redis:6379/0
+  RELAY_MCP_JWT_SECRET: ${RELAY_MCP_JWT_SECRET:?set RELAY_MCP_JWT_SECRET}
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://phoenix:6006
+  RELAY_TRACE_CONTENT: redacted
+
+x-backend: &backend
+  <<: *hardening
+  image: *backend-image
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+    migrate:
+      condition: service_completed_successfully
+
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.7-pg18-trixie@sha256:ab49524d18df7200b74ac9a475e1db6297fc1eb57da4c214c63d10ecc4b754fa
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-relay}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-relay}
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    configs:
+      - source: initdb
+        target: /docker-entrypoint-initdb.d/10-create-databases.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  redis:
+    image: redis:8.10.3-alpine@sha256:7958cfbb9d152f87dadfbc89f1b0b15938f0b81ff8982feb327476f4911935c3
+    restart: unless-stopped
+    logging: *logging
+    # Sessions, limits and the spend counters survive a restart (append-only file).
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  phoenix:
+    image: arizephoenix/phoenix:version-22.0.1-nonroot@sha256:53bbfd959a5fa32680bf81607d4ba548d87a87133307c3feb9d2076e70b597ea
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      PHOENIX_SQL_DATABASE_URL: postgresql://${POSTGRES_USER:-relay}:${POSTGRES_PASSWORD}@postgres:5432/phoenix
+      PHOENIX_TELEMETRY_ENABLED: "false"
+      PHOENIX_LOG_MIGRATIONS: "false"
+      # Reachable only on the VM's loopback (an SSH tunnel), never through Caddy, so it runs
+      # without its own login and the exporters need no key.
+      PHOENIX_ENABLE_AUTH: "false"
+    ports:
+      - "127.0.0.1:6006:6006"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/bin/python3.13", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:6006/healthz', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  # One-shot job: migrations and the application role's grants, as the owner. `relay seed` and
+  # the nightly `relay demo reset` run in this service too.
+  migrate:
+    <<: *backend
+    command: ["relay", "db", "upgrade"]
+    restart: "no"
+    environment:
+      <<: *backend-env
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-relay}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-relay}
+      RELAY_APP_DB_ROLE: ${RELAY_APP_DB_ROLE:-relay_app}
+      RELAY_APP_DB_PASSWORD: ${RELAY_APP_DB_PASSWORD}
+      RELAY_DEMO_MODE: ${RELAY_DEMO_MODE:-true}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  api:
+    <<: *backend
+    command: ["relay", "api", "serve", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      <<: *backend-env
+      RELAY_FORWARDED_ALLOW_IPS: "*"  # only Caddy reaches the API
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY}
+      RELAY_PROVIDER: ${RELAY_PROVIDER:-anthropic}
+      RELAY_AGENT_MODEL: ${RELAY_AGENT_MODEL:-claude-opus-5-5}
+      RELAY_AGENT_EFFORT: ${RELAY_AGENT_EFFORT:-medium}
+      # Production drops a thinking block whose history no longer matches, and alerts,
+      # instead of failing the customer's turn (§5.4).
+      RELAY_THINKING_PREFIX_MISMATCH: ${RELAY_THINKING_PREFIX_MISMATCH:-drop_block}
+      RELAY_SESSION_SECRET: ${RELAY_SESSION_SECRET:?set RELAY_SESSION_SECRET}
+      RELAY_COOKIE_SECURE: "true"
+      RELAY_ALLOWED_ORIGINS: '["https://${RELAY_DOMAIN:?set RELAY_DOMAIN}"]'
+      RELAY_DEMO_MODE: ${RELAY_DEMO_MODE:-true}
+      RELAY_OPERATOR_EMAIL: ${RELAY_OPERATOR_EMAIL:-operator@relay.example}
+      RELAY_OPERATOR_PASSWORD_HASH: ${RELAY_OPERATOR_PASSWORD_HASH:-}
+      RELAY_DAILY_SPEND_CAP_USD: ${RELAY_DAILY_SPEND_CAP_USD:-20}
+      RELAY_LOGINS_PER_MINUTE: ${RELAY_LOGINS_PER_MINUTE:-10}
+      # Trace links in the console open through the SSH tunnel to Phoenix.
+      RELAY_PHOENIX_URL: ${RELAY_PHOENIX_URL:-http://localhost:6006}
+      RELAY_DRAFTER_MODEL: ${RELAY_DRAFTER_MODEL:-claude-opus-5-5}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/readyz', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  mcp:
+    <<: *backend
+    command: ["relay", "mcp", "serve", "--transport", "streamable-http", "--host", "0.0.0.0", "--port", "8001"]
+    environment:
+      <<: *backend-env
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/healthz', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  web:
+    <<: *hardening
+    image: *web-image
+    tmpfs:
+      - /tmp
+      - /app/.next/cache:mode=1777
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/healthz').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  caddy:
+    image: caddy:2.11.9-alpine@sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f0
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      RELAY_DOMAIN: ${RELAY_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL, for Let's Encrypt}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"  # HTTP/3
+    configs:
+      - source: caddyfile
+        target: /etc/caddy/Caddyfile
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE  # ports 80 and 443
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8081/"]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+
+configs:
+  caddyfile:
+    file: ./deploy/Caddyfile
+  initdb:
+    file: ./deploy/postgres/initdb/10-create-databases.sql
+
+volumes:
+  postgres-data:
+  redis-data:
+  caddy-data:
+  caddy-config:

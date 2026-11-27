@@ -2,6 +2,9 @@
 // API on the key-free demo agent (RELAY_PROVIDER=scripted), so it needs no model key:
 //
 //   RELAY_PROVIDER=scripted make up && make seed && make e2e
+//
+// E2E_BASE_URL points it elsewhere, such as the production stack on https://localhost, whose
+// certificate comes from Caddy's local CA (E2E_IGNORE_HTTPS_ERRORS=1).
 import { defineConfig, devices } from "@playwright/test";
 
 export default defineConfig({
@@ -13,6 +16,7 @@ export default defineConfig({
   use: {
     baseURL: process.env.E2E_BASE_URL ?? "http://localhost:8080",
     trace: "retain-on-failure",
+    ignoreHTTPSErrors: process.env.E2E_IGNORE_HTTPS_ERRORS === "1",
   },
   projects: [
     { name: "desktop", use: { ...devices["Desktop Chrome"] } },

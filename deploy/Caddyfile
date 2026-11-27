@@ -1,0 +1,44 @@
+# Production Caddy config (compose.prod.yaml): automatic HTTPS for RELAY_DOMAIN, one origin for
+# the app and the API. Phoenix is not published here: reach it through an SSH tunnel
+# (docs/DEPLOY.md). The development config is Caddyfile.dev.
+{
+	admin off
+	email {$ACME_EMAIL}
+}
+
+{$RELAY_DOMAIN} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
+		# Next.js hydrates with inline scripts, so script-src needs 'unsafe-inline' (no nonces in
+		# a static build). Everything is still same-origin: no third-party script, style or fetch.
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"
+		-Server
+	}
+
+	# The API limits bodies too (PLAN.md §11); this stops oversized requests at the edge.
+	request_body {
+		max_size 1MB
+	}
+
+	handle /api/* {
+		# Write responses through as they arrive, so SSE streams aren't buffered.
+		reverse_proxy api:8000 {
+			flush_interval -1
+		}
+	}
+
+	handle {
+		reverse_proxy web:3000
+	}
+}
+
+# The container healthcheck; this port is not published.
+:8081 {
+	respond "ok" 200
+}

@@ -1,0 +1,10 @@
+[Unit]
+Description=Reset the Relay demo every night at 04:00 UTC
+
+[Timer]
+OnCalendar=*-*-* 04:00:00 UTC
+# Run at the next boot if the VM was off at 04:00.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

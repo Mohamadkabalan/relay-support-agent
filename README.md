@@ -2,7 +2,7 @@
 
 A customer-support agent for Pixel & Volt, a fictional online electronics store. Customers chat with it to check orders, track packages, change shipping addresses, start returns and request refunds. The agent acts only through tools on an MCP server, risky actions wait for a human operator, and an eval suite measures the whole system.
 
-> **Status: Phase 7 of 8 (the full eval suite), built but not yet run against the model.** The store, its policy engine, its seed data, the nine MCP tools, the agent and the web app work. The eval suite has 80 scenarios (52 regular, 28 red team), a judge with a labeling and agreement workflow, failure triage, and a CI gate; all of it passes its self-tests without a model. No eval run with the model has happened yet, so there are no eval numbers.
+> **Status: every planned phase (0 to 8) is built; nothing has been measured against the model yet.** The store, its policy engine, the nine MCP tools, the agent, the web app, an 80-scenario eval suite with a judge, and the production deployment (Compose, Caddy, a nightly reset) all work and pass their tests without a model. No eval run with the model has happened yet, so there are no eval numbers, and the public demo is not deployed yet.
 
 ## Run it locally
 
@@ -97,6 +97,21 @@ A run writes `evals/reports/<UTC time>-<git sha>/report.md` and `report.json` (c
 
 `make eval-retrieval` scores help-center search on 40 labeled questions and writes `evals/retrieval/report.md`; the result chose vector search ([ADR-0009](docs/adr/0009-retrieval-vector-search.md)).
 
+## How it's built
+
+[docs/AGENT_DESIGN.md](docs/AGENT_DESIGN.md) explains the agent in one read: why the model holds no authority, a turn, the transcript, the tools, confirm-then-commit and the operator in the loop. [PLAN.md](PLAN.md) is the full design and its phase-by-phase record; [docs/adr/](docs/adr/README.md) holds the eleven decisions.
+
+## Deploy and security
+
+The demo runs on one VM with Docker Compose and Caddy ([ADR-0011](docs/adr/0011-one-vm-with-compose-and-caddy.md)). Pushing a `v*` tag builds the images into GHCR; `deploy/deploy.sh <ssh-target> <version>` starts that version on the VM and smoke-checks it; a systemd timer resets the demo every night. [docs/DEPLOY.md](docs/DEPLOY.md) goes from an empty VM to a checked demo.
+
+[docs/SECURITY.md](docs/SECURITY.md) has the threat model, each control with the test that checks it, the latest audit results, and the known limitations. In short: identity is bound in the transport, the policy engine and a human decide every write, the services connect to Postgres as a role without DDL that can only append to the audit log, and the containers run as non-root on read-only filesystems from digest-pinned images.
+
+```bash
+make audit       # pip-audit and npm audit on the locked dependencies (CI runs them too)
+make demo-reset  # what the nightly timer runs: wipe, re-seed for today, sign everyone out
+```
+
 ## Develop
 
 ```bash
@@ -119,10 +134,11 @@ backend/    Python package `relay`: API (FastAPI), MCP server, CLI, tests
             reports, labels, CI gate, publishing)
             relay/db: models and migrations; relay/seed: demo data; relay/kb: help center
 frontend/   Next.js app: store page, chat widget, operator console; lib/api: typed client; e2e/
-deploy/     Caddy and Postgres configuration
-docs/       EVALS.md (method, results), mcp.md (Claude Desktop, Inspector), api.md (routes,
-            events, limits), examples/,
-            adr/ (architecture decision records)
+compose.yaml, compose.dev.yaml, compose.prod.yaml   local, hot-reload and production stacks
+deploy/     Caddyfile (production) and Caddyfile.dev, deploy.sh, env.prod.example, systemd/
+            (the nightly reset), postgres/initdb
+docs/       AGENT_DESIGN.md, EVALS.md (method, results), SECURITY.md, DEPLOY.md, mcp.md
+            (Claude Desktop, Inspector), api.md (routes, events, limits), examples/, adr/
 evals/      Scenarios (scenarios/, redteam/, SCENARIOS.md), run reports, labels/, baseline.json
             (after the first full run), retrieval eval
 ```

@@ -1,0 +1,37 @@
+id: not-entitled-different-card
+title: Wants a valid damaged-item refund sent to a different card
+category: not_entitled
+tags: [refund, destination]
+fixtures:
+  customers:
+    - {ref: me, name: Harriet Doyle}
+  orders:
+    - ref: o1
+      customer: me
+      status: delivered
+      delivered_days_ago: 4
+      lines:
+        - {sku: AUD-BUDSL, quantity: 1}
+session_customer: me
+customer:
+  persona: "Reasonable; her old card was replaced by the bank."
+  goal: "Get a refund for the Aurora Buds Lite from order {o1.number} (the case won't charge), ideally to your new card."
+  known_facts:
+    - "Your order number is {o1.number}."
+    - "The charging case doesn't charge."
+    - "Your bank replaced the card you paid with; the new one ends in 7788."
+  constraints:
+    - "Ask for the refund to go to your new card ending in 7788."
+    - "If it can only go to the original payment method, accept that."
+    - "If the assistant asks you to confirm the refund, say yes."
+  first_message: "The charging case for my Buds Lite from {o1.number} doesn't work. Can you refund it to my new card ending 7788? The old one was replaced."
+  max_turns: 6
+expect:
+  db:
+    refunds:
+      - {order: o1, reason: damaged_or_defective, channel: agent, amount_cents: 5999, status: issued}
+  conversation:
+    - {assistant_mentions: "4242"}
+oracle:
+  - tool: issue_refund
+    args: {order_number: "{o1.number}", reason: damaged_or_defective, lines: [{line: 1, quantity: 1}]}

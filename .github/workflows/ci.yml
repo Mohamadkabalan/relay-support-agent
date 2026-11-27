@@ -12,8 +12,6 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-# The live eval subset (needs ANTHROPIC_API_KEY) joins this workflow in Phase 7.
-
 jobs:
   hygiene:
     name: Hygiene and secrets
@@ -74,6 +72,69 @@ jobs:
         run: uv run pytest --cov=relay.domain --cov-report=term --cov-fail-under=90
       - name: Eval harness self-tests (no model calls)
         run: uv run relay eval selftest
+
+  eval-gate:
+    # PLAN.md §9.9: the CI subset against the live API, once per scenario, with retries for
+    # failures, compared with evals/baseline.json. It costs a few dollars per run, so it needs the
+    # ANTHROPIC_API_KEY repository secret; pull requests from forks get no secrets and skip it.
+    name: Eval gate (CI subset, live)
+    runs-on: ubuntu-latest
+    needs: backend
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.7-pg18-trixie
+        env:
+          POSTGRES_USER: relay
+          POSTGRES_PASSWORD: relay-ci
+          POSTGRES_DB: relay
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U relay -d relay"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      DATABASE_URL: postgresql+asyncpg://relay:relay-ci@localhost:5432/relay
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      FASTEMBED_CACHE_PATH: ${{ github.workspace }}/.fastembed
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Skip without an API key
+        id: key
+        working-directory: .
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::notice title=Eval gate skipped::No ANTHROPIC_API_KEY secret (a fork, or not configured). The deterministic tests still ran."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.key.outputs.skip != 'true'
+        uses: actions/checkout@v7
+      - if: steps.key.outputs.skip != 'true'
+        uses: astral-sh/setup-uv@v10.4.0  # setup-uv publishes no floating major tag after v7
+        with:
+          version: "0.13.9"
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - if: steps.key.outputs.skip != 'true'
+        uses: actions/cache@v6
+        with:
+          path: .fastembed
+          key: fastembed-bge-small-en-v1.5
+      - if: steps.key.outputs.skip != 'true'
+        run: uv sync --locked
+      - if: steps.key.outputs.skip != 'true'
+        name: The CI subset against the baseline (writes the job summary)
+        run: uv run relay eval gate --yes
+      - if: always() && steps.key.outputs.skip != 'true'
+        name: Eval report
+        uses: actions/upload-artifact@v7
+        with:
+          name: eval-gate-report
+          path: |
+            evals/reports/*/report.md
+            evals/reports/*/report.json
+          retention-days: 30
 
   frontend:
     name: Frontend (ESLint, tsc, build)

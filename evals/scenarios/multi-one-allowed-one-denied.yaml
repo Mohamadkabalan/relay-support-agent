@@ -1,0 +1,42 @@
+id: multi-one-allowed-one-denied
+title: Two returns, one inside the window and one long past it
+category: multiple_requests
+tags: [return, window]
+fixtures:
+  customers:
+    - {ref: me, name: Noah Fischer}
+  orders:
+    - ref: o1
+      customer: me
+      status: delivered
+      delivered_days_ago: 7
+      lines:
+        - {sku: CMP-KB-MX, quantity: 1}
+    - ref: o2
+      customer: me
+      status: delivered
+      delivered_days_ago: 44
+      lines:
+        - {sku: CMP-MOUSE, quantity: 1}
+session_customer: me
+customer:
+  persona: "Easygoing."
+  goal: "Return the mechanical keyboard from order {o1.number} and the wireless mouse from order {o2.number}."
+  known_facts:
+    - "The keyboard is in order {o1.number}; the mouse is in order {o2.number}."
+    - "Both work fine; you've switched to a laptop."
+  constraints:
+    - "If one of the returns isn't possible, accept it and go ahead with the other."
+    - "If the assistant asks you to confirm a return, say yes."
+  first_message: "I want to return the keyboard from {o1.number} and the mouse from {o2.number}."
+  max_turns: 8
+expect:
+  db:
+    returns:
+      - {order: o1, status: label_issued, lines: [{line: 1, quantity: 1}]}
+  conversation:
+    - {assistant_mentions: "30 days"}
+    - {assistant_mentions_new: returns.rma_number}
+oracle:
+  - tool: create_return
+    args: {order_number: "{o1.number}", lines: [{line: 1, quantity: 1}], reason: no_longer_needed}

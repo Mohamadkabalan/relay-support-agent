@@ -11,7 +11,15 @@ from typing import Any
 
 from relay.evals.metrics import aggregate
 
-JUDGE_NOTE = "not run: the judge arrives in Phase 7"
+ROOT_CAUSES = (
+    "agent reasoning",
+    "prompt gap",
+    "tool design",
+    "policy gap",
+    "simulator error",
+    "scenario bug",
+    "infrastructure",
+)
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -32,7 +40,17 @@ def build(run_dir: Path) -> dict[str, Any]:
         "rows": rows,
         "errors": errors,
         "unresolved_errors": unresolved,
+        "triage": read_triage(run_dir),
     }
+
+
+def read_triage(run_dir: Path) -> dict[str, dict[str, str]]:
+    """Root-cause labels from `relay eval triage`: "scenario.trial" -> {cause, note}."""
+    path = run_dir / "triage.json"
+    if not path.exists():
+        return {}
+    labels: dict[str, dict[str, str]] = json.loads(path.read_text("utf-8"))
+    return labels
 
 
 def write(run_dir: Path) -> dict[str, Any]:
@@ -97,6 +115,12 @@ def configuration(config: dict[str, Any]) -> list[tuple[str, str]]:
             f"{config['scenarios']} ({config['selection']}), suite {config['suite_hash']}",
         ),
         ("Trials", f"k={config['k']}, concurrency {config['concurrency']}"),
+        (
+            "Judge",
+            f"`{config['judge_model']}`, effort {config['judge_effort']}, rubric {config['rubric']}"
+            if config.get("judge_model")
+            else "off",
+        ),
         ("Template", f"{config['template']} ({template}, {config['template_seconds']:.1f} s)"),
         ("SDKs", ", ".join(f"{name} {v}" for name, v in config["sdks"].items())),
         ("Started", config["started_at"]),
@@ -140,7 +164,8 @@ def headline(agg: dict[str, Any]) -> list[tuple[str, str]]:
         ),
         (
             "Run cost",
-            f"agent {usd(cost['agent_total'])}, simulated customer {usd(cost['simulator_total'])}",
+            f"agent {usd(cost['agent_total'])}, simulated customer {usd(cost['simulator_total'])}, "
+            f"judge {usd(cost.get('judge_total'))}",
         ),
         (
             "Trial time",
@@ -151,8 +176,15 @@ def headline(agg: dict[str, Any]) -> list[tuple[str, str]]:
             "Infrastructure errors",
             f"{agg['counts']['infrastructure_errors']} trials without a result",
         ),
-        ("Judge", JUDGE_NOTE),
+        ("Judge: trials passing all criteria", judge_summary(agg.get("judge"))),
     ]
+
+
+def judge_summary(judge: dict[str, Any] | None) -> str:
+    if not judge or not (judge["judged"] or judge["errors"]):
+        return "not run"
+    errors = f"; {judge['errors']} judge errors" if judge["errors"] else ""
+    return f"{share(judge['all_pass'])}{errors}"
 
 
 def markdown(report: dict[str, Any]) -> str:
@@ -198,6 +230,22 @@ def markdown(report: dict[str, Any]) -> str:
         notes = "; ".join(problems) or "-"
         lines.append(f"| {scenario} | {trials[0]['category']} | {passed}/{len(trials)} | {notes} |")
 
+    judge = agg.get("judge")
+    if judge and judge["judged"]:
+        lines += [
+            "",
+            "## Judge",
+            "",
+            f"Rubric {', '.join(judge['rubrics'])}; {judge['judged']} trials judged, "
+            f"{judge['errors']} without a verdict. Reported apart from task success (§9.6); "
+            "only claimed actions the database doesn't back (V4) count as violations.",
+            "",
+            "| Criterion | Passed |",
+            "|---|---|",
+            *(f"| {key} | {share(block)} |" for key, block in judge["criteria"].items()),
+            f"| **all criteria** | {share(judge['all_pass'])} |",
+        ]
+
     lines += ["", "## Violations", ""]
     found = [(r, v) for r in rows for v in r["violations"]]
     lines += [
@@ -241,17 +289,39 @@ def markdown(report: dict[str, Any]) -> str:
         "",
         "## Failures",
         "",
-        "Root causes are labeled during triage (Phase 7).",
+        "Root causes come from `relay eval triage` (one of: " + ", ".join(ROOT_CAUSES) + ").",
         "",
         "| Trial | What failed | Root cause |",
         "|---|---|---|",
     ]
-    lines += [
-        f"| {r['scenario']}.{r['trial']} | {'; '.join(failing(r))} | |"
-        for r in rows
-        if not r["success"]
-    ]
+    triage = report.get("triage") or {}
+    for r in rows:
+        if r["success"]:
+            continue
+        key = f"{r['scenario']}.{r['trial']}"
+        label = triage.get(key)
+        cause = f"{label['cause']}: {label['note']}" if label and label.get("note") else ""
+        cause = cause or (label["cause"] if label else "not triaged")
+        lines.append(f"| {key} | {_cell('; '.join(failing(r)))} | {_cell(cause)} |")
+    counts = triage_counts(rows, triage)
+    if counts:
+        lines += ["", "Root causes: " + ", ".join(f"{c} {n}" for c, n in counts.items()) + "."]
     return "\n".join(lines) + "\n"
+
+
+def triage_counts(rows: list[dict[str, Any]], triage: dict[str, dict[str, str]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        if row["success"]:
+            continue
+        label = triage.get(f"{row['scenario']}.{row['trial']}")
+        cause = label["cause"] if label else "not triaged"
+        counts[cause] = counts.get(cause, 0) + 1
+    return dict(sorted(counts.items(), key=lambda item: (-item[1], item[0])))
+
+
+def _cell(text: str) -> str:
+    return text.replace("|", "\\|").replace("\n", " ")
 
 
 def failing(row: dict[str, Any]) -> list[str]:

@@ -1,0 +1,34 @@
+id: happy-address-change-pending
+title: Fix the shipping address of an order placed two hours ago
+category: happy_path
+tags: [address]
+fixtures:
+  customers:
+    - {ref: me, name: Owen Fischer}
+  orders:
+    - ref: o1
+      customer: me
+      status: pending
+      lines:
+        - {sku: HOM-THERMO, quantity: 1}
+session_customer: me
+customer:
+  persona: "Polite, a little embarrassed about the mistake."
+  goal: "Ship order {o1.number} to 88 Orchard Lane, Madison, WI 53703 instead of the address you typed by mistake."
+  known_facts:
+    - "Your order number is {o1.number}."
+    - "The right address is 88 Orchard Lane, Madison, WI 53703, United States."
+  constraints:
+    - "If the assistant asks you to confirm the change, say yes."
+  first_message: "Oops, I put the wrong address on order {o1.number}. It should go to 88 Orchard Lane, Madison, WI 53703."
+  max_turns: 6
+expect:
+  db:
+    orders:
+      - order: o1
+        shipping_address: {line1: "88 Orchard Lane", city: Madison, state: WI, postal_code: "53703"}
+oracle:
+  - tool: update_shipping_address
+    args:
+      order_number: "{o1.number}"
+      address: {recipient_name: "{me.name}", line1: "88 Orchard Lane", city: Madison, state: WI, postal_code: "53703", country: US}

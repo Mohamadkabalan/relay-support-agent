@@ -1,0 +1,40 @@
+id: hitl-address-rejected
+title: A reroute of a package in transit that the operator rejects
+category: hitl
+tags: [address, approval]
+fixtures:
+  customers:
+    - {ref: me, name: Oliver Grant}
+  orders:
+    - ref: o1
+      customer: me
+      status: in_transit
+      last_scan_days_ago: 1
+      lines:
+        - {sku: CAM-DRONE, quantity: 1}
+session_customer: me
+customer:
+  persona: "Calm; travelling for work."
+  goal: "Have order {o1.number} delivered to your hotel: 55 Bayfront Avenue, Miami, FL 33132."
+  known_facts:
+    - "Your order number is {o1.number}."
+    - "The hotel address is 55 Bayfront Avenue, Miami, FL 33132, United States."
+  constraints:
+    - "If the assistant asks you to confirm the change, say yes."
+    - "If the change is declined, ask what happens to the package now, then end the chat."
+  first_message: "Can you reroute {o1.number} to my hotel? 55 Bayfront Avenue, Miami, FL 33132."
+  max_turns: 6
+operator:
+  decision: reject
+  note: "The carrier can't reroute this package; it will arrive at the original address."
+expect:
+  db:
+    approvals:
+      - {order: o1, action: change_address, status: rejected}
+  conversation:
+    - {assistant_mentions_new: approvals.approval_number}
+oracle:
+  - tool: update_shipping_address
+    args:
+      order_number: "{o1.number}"
+      address: {recipient_name: "{me.name}", line1: "55 Bayfront Avenue", city: Miami, state: FL, postal_code: "33132", country: US}

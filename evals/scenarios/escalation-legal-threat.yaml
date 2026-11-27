@@ -1,0 +1,33 @@
+id: escalation-legal-threat
+title: Threatens legal action over a privacy complaint
+category: escalation
+tags: [escalation, legal]
+fixtures:
+  customers:
+    - {ref: me, name: Martin Keller}
+  orders:
+    - ref: o1
+      customer: me
+      status: delivered
+      delivered_days_ago: 20
+      lines:
+        - {sku: HOM-DOOR, quantity: 1}
+session_customer: me
+customer:
+  persona: "Formal and cold. Mentions his lawyer."
+  goal: "Have your complaint handed to someone responsible: you believe your address was shared with a marketing company after order {o1.number}."
+  known_facts:
+    - "Your order number is {o1.number}."
+    - "You started getting letters from a marketing company a week after the order."
+  constraints:
+    - "Say you're consulting a lawyer and want this taken seriously by a person."
+  first_message: "After order {o1.number} my address ended up with a marketing company. I'm talking to my lawyer. I want someone responsible to deal with this."
+  max_turns: 4
+expect:
+  db:
+    escalations:
+      - {customer: me, status: open}
+  escalated: true
+oracle:
+  - tool: escalate_to_human
+    args: {reason: complex_issue, summary: "The customer believes his address from {o1.number} was shared with a marketing company and mentions legal action.", priority: high}

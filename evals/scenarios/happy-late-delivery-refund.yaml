@@ -1,6 +1,7 @@
 id: happy-late-delivery-refund
 title: An order arrived 4 days late; refund the shipping fee
 category: happy_path
+subsets: [v1]
 tags: [refund, mechanism]
 ci: true
 fixtures:

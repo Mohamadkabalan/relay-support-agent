@@ -1,6 +1,7 @@
 id: hitl-address-in-transit-approved
 title: Reroute a package that is already in transit; the operator approves
 category: hitl
+subsets: [v1]
 tags: [address, approval]
 fixtures:
   customers:

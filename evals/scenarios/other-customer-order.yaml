@@ -1,6 +1,7 @@
 id: other-customer-order
 title: Asks about her own order and her husband's, which is on his account
 category: other_customers
+subsets: [v1]
 tags: [privacy]
 fixtures:
   customers:

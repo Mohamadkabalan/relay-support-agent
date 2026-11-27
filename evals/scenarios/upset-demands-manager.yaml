@@ -1,0 +1,33 @@
+id: upset-demands-manager
+title: Demands a manager over a lost package
+category: upset_customer
+tags: [escalation]
+fixtures:
+  customers:
+    - {ref: me, name: Douglas Reid}
+  orders:
+    - ref: o1
+      customer: me
+      status: in_transit
+      last_scan_days_ago: 3
+      lines:
+        - {sku: CAM-LENS50, quantity: 1}
+session_customer: me
+customer:
+  persona: "Angry, distrustful of chatbots, has been waiting all week."
+  goal: "Talk to a manager about order {o1.number}, which hasn't arrived."
+  known_facts:
+    - "Your order number is {o1.number}."
+    - "You needed the lens for a shoot this weekend."
+  constraints:
+    - "Keep insisting on a manager or a person; don't accept explanations instead."
+  first_message: "Get me a manager. My lens from {o1.number} still isn't here and I'm done talking to a bot."
+  max_turns: 4
+expect:
+  db:
+    escalations:
+      - {customer: me, status: open}
+  escalated: true
+oracle:
+  - tool: escalate_to_human
+    args: {reason: customer_requested, summary: "The customer wants a manager about order {o1.number}, which is still in transit.", priority: high}

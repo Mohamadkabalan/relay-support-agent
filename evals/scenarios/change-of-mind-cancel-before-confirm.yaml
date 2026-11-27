@@ -1,6 +1,7 @@
 id: change-of-mind-cancel-before-confirm
 title: Starts a return, then keeps the item before confirming
 category: change_of_mind
+subsets: [v1]
 tags: [return]
 fixtures:
   customers:

@@ -2,15 +2,17 @@
 graders, the runner and the self-tests, without a model."""
 
 import json
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from tests.support.factories import server_url
 
 from relay.agent.providers.scripted import Call, Reply, ScriptedProvider, ScriptedRequest
 from relay.config import Settings
-from relay.db.models import Customer
+from relay.db.models import Customer, HelpArticle, KbChunk, Order, OrderLine, Refund, Return
 from relay.db.session import create_engine, make_sessionmaker
 from relay.domain.enums import ReturnReason, WriteAction
 from relay.domain.policy_config import default_policy
@@ -232,3 +234,129 @@ async def test_the_self_tests_pass_on_a_sample(
         "timing",
         "infrastructure error",
     }
+
+
+async def fixture_rows(
+    template: Template, scenario_id: str, query: Callable[[AsyncSession], Awaitable[Any]]
+) -> Any:
+    """Apply one scenario's fixtures to a fresh clone and return what `query` reads."""
+    name, url = await databases.clone(server_url(), template.name)
+    engine = create_engine(url, pool_size=2)
+    try:
+        sessionmaker = make_sessionmaker(engine)
+        async with sessionmaker() as session, session.begin():
+            await apply_fixtures(
+                session, SCENARIOS[scenario_id], EVAL_NOW, default_policy(), HashingEmbedder()
+            )
+        async with sessionmaker() as session:
+            return await query(session)
+    finally:
+        await engine.dispose()
+        await databases.drop(server_url(), name)
+
+
+async def test_fixtures_add_history_articles_and_sale_prices(light_template: Template) -> None:
+    async def refunds(session: AsyncSession) -> list[tuple[str, str, int]]:
+        rows = await session.scalars(select(Refund).order_by(Refund.refund_number))
+        return [(r.refund_number, r.channel.value, r.amount_cents) for r in rows]
+
+    async def returns(session: AsyncSession) -> list[tuple[str, str]]:
+        return [(r.rma_number, r.status.value) for r in await session.scalars(select(Return))]
+
+    async def article(session: AsyncSession) -> list[bool]:
+        found = await session.scalar(
+            select(HelpArticle).where(HelpArticle.slug == "holiday-goodwill-refunds")
+        )
+        assert found is not None
+        chunks = await session.scalars(select(KbChunk).where(KbChunk.article_id == found.id))
+        return [chunk.embedding is not None for chunk in chunks]
+
+    async def sale(session: AsyncSession) -> tuple[int, int]:
+        order = await session.scalar(select(Order).where(Order.number == "PV-900001"))
+        assert order is not None
+        line = await session.scalar(select(OrderLine).where(OrderLine.order_id == order.id))
+        assert line is not None
+        return line.unit_price_cents, order.total_cents
+
+    assert await fixture_rows(light_template, "edge-velocity-review", refunds) == [
+        ("RF-90001", "agent", 5999),  # the power bank on o2
+        ("RF-90002", "agent", 4999),  # the SD card on o3
+    ]
+    assert await fixture_rows(light_template, "edge-partial-quantity-returned", returns) == [
+        ("RMA-900001", "completed")
+    ]
+    embedded = await fixture_rows(light_template, "rt-article-goodwill-refund", article)
+    assert embedded
+    assert all(embedded)
+    assert await fixture_rows(light_template, "edge-refund-at-limit", sale) == (10000, 10599)
+
+
+async def test_the_operator_stub_expires_an_approval_and_the_agent_hears_of_it(
+    eval_settings: Settings, light_template: Template
+) -> None:
+    scenario = SCENARIOS["hitl-approval-expires"]
+    refund = {
+        "order_number": "PV-900001",
+        "reason": "damaged_or_defective",
+        "lines": [{"line": 1, "quantity": 1}],
+    }
+
+    def commit(sent: ScriptedRequest) -> Reply:
+        token = sent.last_tool_result["confirmation_token"]
+        return Reply(calls=(Call("issue_refund", {**refund, "confirmation_token": token}),))
+
+    def submitted(sent: ScriptedRequest) -> Reply:
+        number = sent.last_tool_result["approval_number"]
+        return Reply(text=f"Submitted for review as {number}.")
+
+    def resumed(sent: ScriptedRequest) -> Reply:
+        assert "expired" in sent.messages[-1]["content"]
+        return Reply(text="Your request expired, so I've passed it to our team.")
+
+    steps = [
+        Reply(calls=(Call("issue_refund", refund),)),
+        Reply(text="$499.99 needs a review. Go ahead?"),
+        commit,
+        submitted,
+        resumed,
+    ]
+    row = await run_trial(setup_for(eval_settings, light_template, steps, ["Yes."]), scenario, 1)
+
+    assert row["success"], row["checks"]
+    assert row["escalated"]
+
+
+async def test_the_operator_waits_for_more_customer_messages(
+    eval_settings: Settings, light_template: Template
+) -> None:
+    scenario = SCENARIOS["hitl-chatting-while-pending"]
+    refund = {
+        "order_number": "PV-900001",
+        "reason": "damaged_or_defective",
+        "lines": [{"line": 1, "quantity": 1}],
+    }
+    seen: list[int] = []
+
+    def commit(sent: ScriptedRequest) -> Reply:
+        token = sent.last_tool_result["confirmation_token"]
+        return Reply(calls=(Call("issue_refund", {**refund, "confirmation_token": token}),))
+
+    def waiting(sent: ScriptedRequest) -> Reply:
+        seen.append(len(sent.messages))
+        return Reply(text="Still waiting on the team's decision.")
+
+    steps = [
+        Reply(calls=(Call("issue_refund", refund),)),
+        Reply(text="$229.99 needs a review. Go ahead?"),
+        commit,
+        Reply(text="Submitted for review."),
+        waiting,
+        waiting,
+        Reply(text="Approved: your $229.99 refund is on its way."),
+    ]
+    customer = ["Yes.", "Any update?", "Does it go back to my card?"]
+    row = await run_trial(setup_for(eval_settings, light_template, steps, customer), scenario, 1)
+
+    assert row["success"], row["checks"]
+    assert len(seen) == 2  # two more customer turns before the operator decided
+    assert row["customer_turns"] == 4

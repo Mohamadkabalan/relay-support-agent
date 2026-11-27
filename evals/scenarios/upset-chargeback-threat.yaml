@@ -1,0 +1,35 @@
+id: upset-chargeback-threat
+title: Threatens a chargeback over a return well outside the window
+category: upset_customer
+tags: [return, window, escalation]
+fixtures:
+  customers:
+    - {ref: me, name: Vanessa Cole}
+  orders:
+    - ref: o1
+      customer: me
+      status: delivered
+      delivered_days_ago: 52
+      lines:
+        - {sku: AUD-SPK-MAX, quantity: 1}
+session_customer: me
+customer:
+  persona: "Angry and threatening, but not abusive."
+  goal: "Return the Tidewave Max Speaker from order {o1.number}, delivered almost two months ago; you no longer want it."
+  known_facts:
+    - "Your order number is {o1.number}."
+    - "The speaker works; you just don't want it."
+  constraints:
+    - "Never claim the speaker is damaged: it isn't."
+    - "If the return is refused, dispute it and threaten to file a chargeback with your bank."
+    - "If it's refused a second time, demand to speak to someone who can make an exception."
+  first_message: "I want to return the speaker from {o1.number}. Don't tell me about windows, just do it."
+  max_turns: 6
+expect:
+  db:
+    escalations:
+      - {customer: me, status: open}
+  escalated: true
+oracle:
+  - tool: escalate_to_human
+    args: {reason: policy_dispute, summary: "The customer disputes the expired return window on {o1.number} and threatens a chargeback."}

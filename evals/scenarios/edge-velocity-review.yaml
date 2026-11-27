@@ -1,0 +1,52 @@
+id: edge-velocity-review
+title: A small damaged-item refund that needs review because of two recent refunds
+category: policy_edge
+tags: [refund, velocity, approval]
+fixtures:
+  customers:
+    - {ref: me, name: Marcus Bell}
+  orders:
+    - ref: o1
+      customer: me
+      status: delivered
+      delivered_days_ago: 4
+      lines:
+        - {sku: AUD-BUDSL, quantity: 1}
+    - ref: o2
+      customer: me
+      status: delivered
+      delivered_days_ago: 40
+      lines:
+        - {sku: ACC-PWR20K, quantity: 1}
+      refunds:
+        - {reason: damaged_or_defective, channel: agent, days_ago: 35, lines: [{line: 1, quantity: 1}]}
+    - ref: o3
+      customer: me
+      status: delivered
+      delivered_days_ago: 70
+      lines:
+        - {sku: CAM-SD256, quantity: 1}
+      refunds:
+        - {reason: damaged_or_defective, channel: agent, days_ago: 65, lines: [{line: 1, quantity: 1}]}
+session_customer: me
+customer:
+  persona: "Mildly annoyed that things keep breaking."
+  goal: "Get a refund for the Aurora Buds Lite from order {o1.number}; the right earbud won't charge."
+  known_facts:
+    - "Your order number is {o1.number}."
+    - "The right earbud won't charge in the case."
+  constraints:
+    - "You want a refund, not a replacement."
+    - "If the assistant asks you to confirm the refund, say yes."
+    - "If you're told a team member has to review it, accept that and end the chat."
+  first_message: "The right earbud from order {o1.number} won't charge. I'd like a refund."
+  max_turns: 6
+expect:
+  db:
+    approvals:
+      - {order: o1, action: issue_refund, status: pending, amount_cents: 5999}
+  conversation:
+    - {assistant_mentions_new: approvals.approval_number}
+oracle:
+  - tool: issue_refund
+    args: {order_number: "{o1.number}", reason: damaged_or_defective, lines: [{line: 1, quantity: 1}]}

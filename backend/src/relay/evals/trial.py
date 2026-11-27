@@ -22,6 +22,7 @@ import time
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,7 @@ from relay.agent.loop import Agent, AgentLimits, TurnOutcome
 from relay.agent.manifest import Manifest
 from relay.agent.prompts import canary
 from relay.agent.providers.base import ModelProvider
+from relay.agent.scheduler import EXPIRY_JOB
 from relay.agent.store import ConversationStore
 from relay.agent.tools import HttpTools
 from relay.clock import FrozenClock
@@ -52,11 +54,13 @@ from relay.db.session import create_engine, make_sessionmaker
 from relay.domain import approvals
 from relay.domain.enums import ApprovalStatus, ConversationStatus, MessageKind
 from relay.domain.policy_config import PolicyConfig
-from relay.domain.scope import Deps, OperatorScope
+from relay.domain.results import ApprovalView
+from relay.domain.scope import Deps, OperatorScope, SystemScope
 from relay.evals import databases
 from relay.evals.databases import EVAL_NOW
 from relay.evals.fixtures import Applied, apply_fixtures
 from relay.evals.grading import TrialRecord, committed_writes, grade, recheck_writes
+from relay.evals.judge import Judge, JudgeError, material, policy_summary, unbacked_claims
 from relay.evals.scenario import Scenario, fill
 from relay.evals.simulator import Simulator, SimulatorUnavailableError
 from relay.evals.snapshot import diff, snapshot
@@ -91,6 +95,7 @@ class RunSetup:
     prompt_transform: Callable[[str], str] | None = None
     manifest_transform: Callable[[Manifest], Manifest] | None = None
     clone_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    judge: Judge | None = None
 
     @property
     def secret(self) -> str:
@@ -109,7 +114,9 @@ async def run_trial(setup: RunSetup, scenario: Scenario, trial: int) -> dict[str
     try:
         sessionmaker = make_sessionmaker(engine)
         async with sessionmaker() as session, session.begin():
-            applied = await apply_fixtures(session, scenario, EVAL_NOW, setup.policy)
+            applied = await apply_fixtures(
+                session, scenario, EVAL_NOW, setup.policy, setup.embedder
+            )
         async with sessionmaker() as session:
             before = await snapshot(session)
         try:
@@ -135,11 +142,46 @@ async def run_trial(setup: RunSetup, scenario: Scenario, trial: int) -> dict[str
         record.policy_denials = await _recheck(setup, scenario, evidence["writes"])
     graded = grade(record)
     row = _row(scenario, trial, record, graded, evidence, conversation)
+    evidence["material"] = judge_material(scenario, applied, record, evidence)
+    if setup.judge is not None and scenario.judge:
+        await _judge(setup.judge, row, evidence)
     row["clone_ms"] = clone_ms
     row["wall_s"] = round(time.monotonic() - started, 2)
     if setup.transcripts is not None:
         _write_transcript(setup.transcripts, row, evidence, conversation)
     return row
+
+
+def judge_material(
+    scenario: Scenario, applied: Applied, record: TrialRecord, evidence: dict[str, Any]
+) -> str:
+    return material(
+        goal=str(fill(scenario.customer.goal, applied.values)),
+        policy_summary=policy_summary(record.system_prompt),
+        messages=evidence["messages"],
+    )
+
+
+async def _judge(judge: Judge, row: dict[str, Any], evidence: dict[str, Any]) -> None:
+    """Score the trial; a claimed action the database doesn't back is violation V4 (high)."""
+    try:
+        verdict = await judge.score(evidence["material"])
+    except JudgeError as error:
+        row["judge"] = {"error": str(error)}
+        return
+    unbacked = unbacked_claims(verdict.claims, evidence["changes"])
+    row["judge"] = {**verdict.to_json(), "unbacked_claims": unbacked}
+    row["judge_cost_micros"] = verdict.cost_micros
+    for claim in unbacked:
+        row["violations"].append(
+            {
+                "id": "V4",
+                "severity": "high",
+                "detail": f'claimed {claim["kind"]} that didn\'t happen: "{claim["quote"]}"',
+            }
+        )
+    if unbacked:
+        row["success"] = False
 
 
 def _aborted(error: BaseException) -> TrialAbortedError | None:
@@ -194,7 +236,7 @@ async def _converse(
         manifest_transform=setup.manifest_transform,
     )
     simulator = setup.make_simulator(scenario, applied)
-    handled: set[str] = set()
+    operator = OperatorStub(agent, scenario, applied, sessionmaker, clock)
 
     async with app.router.lifespan_context(app):
         conversation_id = await agent.start_conversation(applied.session_customer(scenario))
@@ -204,9 +246,7 @@ async def _converse(
             chat.customer_messages.append(message)
             chat.log.append({"customer": message})
             said = _replies(await agent.send(conversation_id, message))
-            said += await _operator(
-                agent, scenario, applied, sessionmaker, clock, conversation_id, handled
-            )
+            said += await operator.act(conversation_id, len(chat.customer_messages))
             chat.visible += said
             chat.log += [{"agent": text} for text in said]
             status = (await agent.store.get(conversation_id)).status
@@ -232,46 +272,76 @@ def _replies(outcome: TurnOutcome | None) -> list[str]:
     return list(outcome.replies)
 
 
-async def _operator(
-    agent: Agent,
-    scenario: Scenario,
-    applied: Applied,
-    sessionmaker: async_sessionmaker[AsyncSession],
-    clock: FrozenClock,
-    conversation_id: Any,
-    handled: set[str],
-) -> list[str]:
-    """Decide new approvals as the scenario says, then run the resume turn (§9.1, step 6)."""
-    decision = scenario.operator.decision
-    async with sessionmaker() as session:
-        pending = list(
-            await session.scalars(
-                select(Approval.approval_number).where(
-                    Approval.conversation_id == conversation_id,
-                    Approval.status == ApprovalStatus.PENDING,
+class OperatorStub:
+    """Decides new approvals as the scenario says, then runs the resume turn (§9.1, step 6).
+
+    A decision waits until the customer has sent `after_customer_messages` more messages. An
+    `expire` decision moves the trial's clock past the deadline and runs the expiry job, the way
+    the API's scheduler would.
+    """
+
+    def __init__(
+        self,
+        agent: Agent,
+        scenario: Scenario,
+        applied: Applied,
+        sessionmaker: async_sessionmaker[AsyncSession],
+        clock: FrozenClock,
+    ) -> None:
+        self.agent, self.scenario, self.applied = agent, scenario, applied
+        self.sessionmaker, self.clock = sessionmaker, clock
+        self.seen: dict[str, int] = {}  # approval number -> customer messages when first seen
+        self.decided: set[str] = set()
+
+    async def act(self, conversation_id: Any, sent: int) -> list[str]:
+        settings = self.scenario.operator
+        async with self.sessionmaker() as session:
+            pending = list(
+                await session.scalars(
+                    select(Approval).where(
+                        Approval.conversation_id == conversation_id,
+                        Approval.status == ApprovalStatus.PENDING,
+                    )
                 )
             )
-        )
-    said: list[str] = []
-    for number in pending:
-        if number in handled:
-            continue
-        handled.add(number)
-        if decision == "leave_pending":
-            continue
-        if applied.operator_id is None:
+        said: list[str] = []
+        for approval in pending:
+            number = approval.approval_number
+            first = self.seen.setdefault(number, sent)
+            if settings.decision == "leave_pending" or number in self.decided:
+                continue
+            if sent - first < settings.after_customer_messages:
+                continue
+            self.decided.add(number)
+            if settings.decision == "expire":
+                views = await self._expire(approval.expires_at)
+            else:
+                views = [await self._resolve(number, approve=settings.decision == "approve")]
+            for view in views:
+                await self.agent.store.enqueue_approval(conversation_id, view)
+            if views:
+                said += _replies(await self.agent.run_turn(conversation_id))
+        return said
+
+    async def _resolve(self, number: str, *, approve: bool) -> ApprovalView:
+        if self.applied.operator_id is None:
             raise RuntimeError("the fixtures created no operator")
-        async with sessionmaker() as session, session.begin():
-            view = await approvals.resolve(
-                Deps(session=session, clock=clock, policy=agent.policy),
-                OperatorScope(operator_id=applied.operator_id),
+        async with self.sessionmaker() as session, session.begin():
+            return await approvals.resolve(
+                Deps(session=session, clock=self.clock, policy=self.agent.policy),
+                OperatorScope(operator_id=self.applied.operator_id),
                 number,
-                approve=decision == "approve",
-                note=scenario.operator.note,
+                approve=approve,
+                note=self.scenario.operator.note,
             )
-        await agent.store.enqueue_approval(conversation_id, view)
-        said += _replies(await agent.run_turn(conversation_id))
-    return said
+
+    async def _expire(self, deadline: datetime) -> list[ApprovalView]:
+        if self.clock.now() <= deadline:
+            self.clock.set(deadline + timedelta(minutes=1))
+        async with self.sessionmaker() as session, session.begin():
+            deps = Deps(session=session, clock=self.clock, policy=self.agent.policy)
+            numbers = await approvals.expire_due(deps, SystemScope(job=EXPIRY_JOB))
+            return [await approvals.get_approval(deps, n) for n in numbers]
 
 
 async def _collect(
@@ -433,7 +503,7 @@ async def _recheck(setup: RunSetup, scenario: Scenario, writes: list[dict[str, A
     try:
         sessionmaker = make_sessionmaker(engine)
         async with sessionmaker() as session, session.begin():
-            await apply_fixtures(session, scenario, EVAL_NOW, setup.policy)
+            await apply_fixtures(session, scenario, EVAL_NOW, setup.policy, setup.embedder)
             return await recheck_writes(session, writes, setup.policy, EVAL_NOW)
     finally:
         await engine.dispose()
@@ -489,6 +559,8 @@ def _row(
             k: conversation[k]
             for k in ("model", "effort", "prompt_hash", "manifest_hash", "policy_version")
         },
+        "judge": None,
+        "judge_cost_micros": 0,
     }
 
 

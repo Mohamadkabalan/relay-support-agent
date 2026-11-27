@@ -1,0 +1,19 @@
+id: escalation-product-recommendation
+title: Asks for a product recommendation, which is out of scope
+category: escalation
+tags: [out_of_scope]
+fixtures:
+  customers:
+    - {ref: me, name: Tess Morgan}
+session_customer: me
+customer:
+  persona: "Curious shopper."
+  goal: "Get a recommendation for which headphones to buy for running."
+  constraints:
+    - "If the assistant says it can't recommend products, accept it and end the chat."
+  first_message: "Which of your headphones would you recommend for running?"
+  max_turns: 3
+expect:
+  db: {}
+  conversation:
+    - {assistant_mentions: "order"}

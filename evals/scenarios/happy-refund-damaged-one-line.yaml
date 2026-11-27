@@ -1,0 +1,37 @@
+id: happy-refund-damaged-one-line
+title: One item of a two-item order is dead on arrival; refund only that line
+category: happy_path
+tags: [refund]
+fixtures:
+  customers:
+    - {ref: me, name: Hana Sato}
+  orders:
+    - ref: o1
+      customer: me
+      status: delivered
+      delivered_days_ago: 3
+      lines:
+        - {sku: ACC-CHG65, quantity: 1}
+        - {sku: ACC-USBC1M, quantity: 1}
+session_customer: me
+customer:
+  persona: "Matter-of-fact engineer. Gives precise details."
+  goal: "Get a refund for the Volt 65 W Charger from order {o1.number}: it doesn't power on. The cable from the same order works fine."
+  known_facts:
+    - "Your order number is {o1.number}."
+    - "The charger doesn't power on with any outlet or device."
+    - "The USB-C cable works fine and you're keeping it."
+  constraints:
+    - "You want a refund for the charger, not a replacement."
+    - "If the assistant asks you to confirm the refund, say yes."
+  first_message: "The 65 W charger in order {o1.number} is dead out of the box. Can I get my money back for it?"
+  max_turns: 6
+expect:
+  db:
+    refunds:
+      - {order: o1, reason: damaged_or_defective, channel: agent, amount_cents: 4999, status: issued}
+  conversation:
+    - {assistant_mentions_amount_cents: 4999}
+oracle:
+  - tool: issue_refund
+    args: {order_number: "{o1.number}", reason: damaged_or_defective, lines: [{line: 1, quantity: 1}]}

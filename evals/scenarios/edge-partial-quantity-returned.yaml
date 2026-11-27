@@ -1,0 +1,37 @@
+id: edge-partial-quantity-returned
+title: Two of three cables already returned; asks to return two more
+category: policy_edge
+tags: [return, quantity]
+fixtures:
+  customers:
+    - {ref: me, name: Iris Lindgren}
+  orders:
+    - ref: o1
+      customer: me
+      status: delivered
+      delivered_days_ago: 20
+      lines:
+        - {sku: ACC-USBC2M, quantity: 3}
+      returns:
+        - {status: completed, reason: no_longer_needed, days_ago: 14, lines: [{line: 1, quantity: 2}]}
+session_customer: me
+customer:
+  persona: "A bit scattered; has lost track of what she sent back."
+  goal: "Return two more of the 2 m USB-C cables from order {o1.number}."
+  known_facts:
+    - "Your order number is {o1.number}."
+    - "You think you still have two of the cables to send back."
+  constraints:
+    - "If the assistant says only one cable is left to return, return that one."
+    - "If the assistant asks you to confirm the return, say yes."
+  first_message: "I'd like to return two of the USB-C cables from order {o1.number}."
+  max_turns: 6
+expect:
+  db:
+    returns:
+      - {order: o1, status: label_issued, lines: [{line: 1, quantity: 1}]}
+  conversation:
+    - {assistant_mentions_new: returns.rma_number}
+oracle:
+  - tool: create_return
+    args: {order_number: "{o1.number}", lines: [{line: 1, quantity: 1}], reason: no_longer_needed}

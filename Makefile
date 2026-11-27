@@ -138,15 +138,18 @@ e2e: .env frontend/node_modules ## Browser smoke test on the key-free demo agent
 # a cost estimate and ask first (YES=1 skips the question). The key travels in the environment.
 EVAL := cd backend && $(TEST_ENV) uv run relay eval
 EVAL_FLAGS = $(if $(YES),--yes) $(if $(RESUME),--resume $(RESUME))
+# The effort sweep and the model comparison run on the regular scenarios unless SUBSET says.
+SWEEP_EFFORTS ?= low high
+COMPARE_MODELS ?= claude-sonnet-5-5 claude-haiku-5-5
 
 .PHONY: eval eval-quick eval-selftest eval-mechanism eval-scenarios eval-import-drafts
 eval: export ANTHROPIC_API_KEY := $(ANTHROPIC_API_KEY)
-eval: .env ## Run the eval suite with the live agent: SUBSET=v1 K=3 [YES=1] [RESUME=dir]
+eval: .env ## Run the eval suite with the live agent and the judge: SUBSET=all K=3 [YES=1] [RESUME=dir]
 	$(COMPOSE) up --detach --wait postgres redis
-	$(EVAL) run --subset $(or $(SUBSET),v1) --k $(or $(K),3) $(EVAL_FLAGS)
+	$(EVAL) run --subset $(or $(SUBSET),all) --k $(or $(K),3) $(EVAL_FLAGS)
 
 eval-quick: export ANTHROPIC_API_KEY := $(ANTHROPIC_API_KEY)
-eval-quick: .env ## The CI eval subset, one trial each [YES=1]
+eval-quick: .env ## The CI subset, one trial each, without the retry rule [YES=1]
 	$(COMPOSE) up --detach --wait postgres redis
 	$(EVAL) run --subset ci --k 1 $(EVAL_FLAGS)
 
@@ -166,11 +169,53 @@ eval-import-drafts: .env ## Write the console's valid scenario drafts to evals/s
 	$(COMPOSE) up --detach --wait postgres
 	$(EVAL) import-drafts
 
+.PHONY: eval-sweep eval-models eval-compare eval-gate eval-baseline eval-triage eval-publish
+eval-sweep: export ANTHROPIC_API_KEY := $(ANTHROPIC_API_KEY)
+eval-sweep: .env ## Effort sweep: one k=3 run per SWEEP_EFFORTS level (default low high) [SUBSET=regular]
+	$(COMPOSE) up --detach --wait postgres redis
+	for effort in $(SWEEP_EFFORTS); do \
+		$(EVAL) run --subset $(or $(SUBSET),regular) --k $(or $(K),3) --agent-effort $$effort $(EVAL_FLAGS); \
+	done
+
+eval-models: export ANTHROPIC_API_KEY := $(ANTHROPIC_API_KEY)
+eval-models: .env ## Model comparison: one k=3 run per COMPARE_MODELS model [SUBSET=regular]
+	$(COMPOSE) up --detach --wait postgres redis
+	for model in $(COMPARE_MODELS); do \
+		$(EVAL) run --subset $(or $(SUBSET),regular) --k $(or $(K),3) --agent-model $$model $(EVAL_FLAGS); \
+	done
+
+eval-compare: ## Runs side by side, into docs/EVALS.md: make eval-compare RUNS="evals/reports/A evals/reports/B"
+	$(EVAL) compare $(addprefix ../,$(RUNS)) --publish
+
+eval-gate: export ANTHROPIC_API_KEY := $(ANTHROPIC_API_KEY)
+eval-gate: .env ## The CI gate: the CI subset with retries, against evals/baseline.json [YES=1]
+	$(COMPOSE) up --detach --wait postgres redis
+	$(EVAL) gate $(if $(YES),--yes)
+
+eval-baseline: ## Make a full k=3 run the CI baseline: make eval-baseline RUN=evals/reports/<run>
+	$(EVAL) baseline ../$(RUN)
+
+eval-triage: ## Label each failure of a run with its root cause: make eval-triage RUN=evals/reports/<run>
+	$(EVAL) triage ../$(RUN)
+
+eval-publish: ## Rewrite the README table and docs/EVALS.md from a run: make eval-publish RUN=evals/reports/<run>
+	$(EVAL) publish ../$(RUN)
+
+.PHONY: eval-label eval-agreement eval-judge-check
+eval-label: ## Hand-label 30 transcripts of a run for the judge check: make eval-label RUN=evals/reports/<run>
+	$(EVAL) label ../$(RUN)
+
+eval-agreement: export ANTHROPIC_API_KEY := $(ANTHROPIC_API_KEY)
+eval-agreement: ## Judge against the hand labels: make eval-agreement LABELS=evals/labels/<run> [REJUDGE=1] [YES=1]
+	$(EVAL) agreement ../$(LABELS) --publish $(if $(REJUDGE),--rejudge) $(if $(YES),--yes)
+
+eval-judge-check: export ANTHROPIC_API_KEY := $(ANTHROPIC_API_KEY)
+eval-judge-check: .env ## Known negatives the judge must fail (5 model calls) [YES=1]
+	$(EVAL) judge-check $(if $(YES),--yes)
+
 # ---------------------------------------------------------------- later phases
 
-.PHONY: eval-label demo-reset
-eval-label: ## Hand-label transcripts to validate the judge (Phase 7)
-	@$(call not_yet,7)
+.PHONY: demo-reset
 demo-reset: ## What the nightly demo reset runs (Phase 8)
 	@$(call not_yet,8)
 

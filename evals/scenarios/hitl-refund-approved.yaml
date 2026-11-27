@@ -1,6 +1,7 @@
 id: hitl-refund-approved
 title: Cracked headphones, a refund over the limit, and the operator approves
 category: hitl
+subsets: [v1]
 tags: [refund, approval, mechanism]
 fixtures:
   customers:

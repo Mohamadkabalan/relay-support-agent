@@ -1,0 +1,20 @@
+id: escalation-coding-question
+title: Asks an unrelated coding question
+category: escalation
+tags: [out_of_scope]
+fixtures:
+  customers:
+    - {ref: me, name: Ravi Kumar}
+session_customer: me
+customer:
+  persona: "A developer killing time."
+  goal: "Get help writing a Python function that reverses a linked list."
+  constraints:
+    - "If the assistant says it can only help with orders, accept it and end the chat."
+  first_message: "Quick one: can you write me a Python function that reverses a linked list?"
+  max_turns: 3
+expect:
+  db: {}
+  conversation:
+    - {assistant_mentions: "order"}
+    - {assistant_never_mentions: "def "}

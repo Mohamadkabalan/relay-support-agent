@@ -1,0 +1,43 @@
+id: multi-two-returns
+title: Returns from two different orders in one conversation
+category: multiple_requests
+tags: [return]
+fixtures:
+  customers:
+    - {ref: me, name: Beatriz Santos}
+  orders:
+    - ref: o1
+      customer: me
+      status: delivered
+      delivered_days_ago: 6
+      lines:
+        - {sku: PHN-CASE15, quantity: 1}
+    - ref: o2
+      customer: me
+      status: delivered
+      delivered_days_ago: 12
+      lines:
+        - {sku: ACC-SLEEVE14, quantity: 1}
+session_customer: me
+customer:
+  persona: "Decluttering; cheerful."
+  goal: "Return the phone case from order {o1.number} and the laptop sleeve from order {o2.number}; you don't need either."
+  known_facts:
+    - "The case is in order {o1.number}; the sleeve is in order {o2.number}."
+    - "Both items are unused."
+  constraints:
+    - "If the assistant asks you to confirm a return, say yes."
+  first_message: "I'd like to return the phone case from {o1.number} and the laptop sleeve from {o2.number}, please."
+  max_turns: 8
+expect:
+  db:
+    returns:
+      - {order: o1, status: label_issued, lines: [{line: 1, quantity: 1}]}
+      - {order: o2, status: label_issued, lines: [{line: 1, quantity: 1}]}
+  conversation:
+    - {assistant_mentions_new: returns.rma_number}
+oracle:
+  - tool: create_return
+    args: {order_number: "{o1.number}", lines: [{line: 1, quantity: 1}], reason: no_longer_needed}
+  - tool: create_return
+    args: {order_number: "{o2.number}", lines: [{line: 1, quantity: 1}], reason: no_longer_needed}

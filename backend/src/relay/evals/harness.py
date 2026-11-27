@@ -27,13 +27,14 @@ from relay.domain.policy_config import PolicyConfig
 from relay.domain.scope import CustomerScope
 from relay.evals.databases import EVAL_NOW, EVAL_SEED, Template
 from relay.evals.fixtures import Applied
+from relay.evals.judge import RUBRIC_VERSION, Judge
 from relay.evals.scenario import Scenario, suite_hash
 from relay.evals.simulator import LlmSimulator
 from relay.evals.trial import RunSetup
 from relay.kb.embeddings import Embedder
 from relay.mcp_server.identity import BoundIdentity
 from relay.mcp_server.runtime import ToolRuntime
-from relay.mcp_server.server import build_server
+from relay.mcp_server.server import build_server, build_tools
 from relay.mcp_server.tools import CONFIRM_THEN_COMMIT
 
 EVAL_MAX_RETRIES = 6
@@ -76,9 +77,10 @@ def live_setup(
     policy: PolicyConfig,
     embedder: Embedder,
     *,
-    transcripts: Path,
+    transcripts: Path | None,
     ablation: str | None = None,
     client: AsyncAnthropic | None = None,  # tests pass one with a fake transport
+    judge: bool = True,
 ) -> RunSetup:
     if client is None:
         if settings.anthropic_api_key is None:
@@ -118,8 +120,19 @@ def live_setup(
         make_provider=make_provider,
         make_simulator=make_simulator,
         transcripts=transcripts,
+        judge=make_judge(client, settings, policy) if judge else None,
     )
     return ablate(setup, ablation)
+
+
+def make_judge(client: AsyncAnthropic, settings: Settings, policy: PolicyConfig) -> Judge:
+    return Judge(
+        client,
+        model=settings.judge_model,
+        effort=settings.judge_effort,
+        store_name=settings.store_name,
+        tools=[tool.name for tool in build_tools(policy)],
+    )
 
 
 def ablate(setup: RunSetup, ablation: str | None) -> RunSetup:
@@ -208,6 +221,7 @@ def config_block(
     manifest: str,
     ablation: str | None,
     provider: str = "anthropic",
+    judge: bool = True,
 ) -> dict[str, Any]:
     sha, dirty = git_state()
     prompt = system_prompt(policy, settings.store_name)
@@ -224,6 +238,9 @@ def config_block(
         "prefix_mismatch": "error",
         "simulator_model": settings.sim_model,
         "simulator_effort": settings.sim_effort,
+        "judge_model": settings.judge_model if judge else None,
+        "judge_effort": settings.judge_effort if judge else None,
+        "rubric": RUBRIC_VERSION if judge else None,
         "prompt_version": prompt.version,
         "prompt_hash": digest(prompt_text),
         "manifest_hash": manifest,

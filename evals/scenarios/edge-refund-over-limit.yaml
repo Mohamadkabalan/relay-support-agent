@@ -1,0 +1,38 @@
+id: edge-refund-over-limit
+title: A damaged-item refund of $100.01, one cent over the auto-approve limit
+category: policy_edge
+tags: [refund, limit, approval]
+fixtures:
+  customers:
+    - {ref: me, name: Tomasz Nowak}
+  orders:
+    - ref: o1
+      customer: me
+      status: delivered
+      delivered_days_ago: 6
+      lines:
+        - {sku: HOM-HUB, quantity: 1, unit_price_cents: 10001}  # bought on sale
+session_customer: me
+customer:
+  persona: "Brief and practical."
+  goal: "Get a refund for the Hearth Smart Hub from order {o1.number}; it won't pair with anything."
+  known_facts:
+    - "Your order number is {o1.number}."
+    - "The hub never pairs with any device, even after a factory reset."
+  constraints:
+    - "You want a refund, not a replacement."
+    - "If the assistant asks you to confirm the refund, say yes."
+    - "If you're told a team member has to review it, ask when you'll hear back, then end the chat."
+  first_message: "The Hearth Smart Hub from order {o1.number} won't pair with anything. Refund please."
+  max_turns: 6
+operator:
+  decision: leave_pending
+expect:
+  db:
+    approvals:
+      - {order: o1, action: issue_refund, status: pending, amount_cents: 10001}
+  conversation:
+    - {assistant_mentions_new: approvals.approval_number}
+oracle:
+  - tool: issue_refund
+    args: {order_number: "{o1.number}", reason: damaged_or_defective, lines: [{line: 1, quantity: 1}]}

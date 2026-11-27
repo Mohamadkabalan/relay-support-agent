@@ -1,6 +1,7 @@
 id: edge-return-day-31
 title: A return asked for on day 31, one day past the window
 category: policy_edge
+subsets: [v1]
 tags: [return, window]
 fixtures:
   customers:

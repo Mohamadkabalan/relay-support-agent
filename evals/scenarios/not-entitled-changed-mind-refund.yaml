@@ -1,6 +1,7 @@
 id: not-entitled-changed-mind-refund
 title: Wants a refund for a speaker that works, without sending it back
 category: not_entitled
+subsets: [v1]
 tags: [refund]
 fixtures:
   customers:

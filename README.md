@@ -2,7 +2,7 @@
 
 A customer-support agent for Pixel & Volt, a fictional online electronics store. Customers chat with it to check orders, track packages, change shipping addresses, start returns and request refunds. The agent acts only through tools on an MCP server, risky actions wait for a human operator, and an eval suite measures the whole system.
 
-> **Status: Phase 6 of 8 (the web app).** The store, its policy engine, its seed data, the nine MCP tools and the agent work. In the browser you can pick a demo customer, chat with the agent, approve refunds in the operator console, replay every turn with its costs and traces, and turn a conversation into an eval scenario. The eval harness and its first 23 scenarios pass their self-tests. No eval run with the model has happened yet, so there are no eval numbers.
+> **Status: Phase 7 of 8 (the full eval suite), built but not yet run against the model.** The store, its policy engine, its seed data, the nine MCP tools, the agent and the web app work. The eval suite has 80 scenarios (52 regular, 28 red team), a judge with a labeling and agreement workflow, failure triage, and a CI gate; all of it passes its self-tests without a model. No eval run with the model has happened yet, so there are no eval numbers.
 
 ## Run it locally
 
@@ -75,16 +75,23 @@ Replies stream over server-sent events that resume after a reconnect. Turns run 
 
 ## Evals
 
-Each trial is a simulated conversation: a model plays the customer from a short brief, the real agent answers through the real MCP tools, and an operator stub decides any approval. The trial runs on its own copy of a seeded template database. It passes when the database changes are exactly what the scenario expects, its conversation checks pass, and no violation occurred: a write the policy forbids, another customer's data, or a prompt leak. [evals/SCENARIOS.md](evals/SCENARIOS.md) lists the 23 scenarios, 8 of them red team. [ADR-0008](docs/adr/0008-eval-trials-on-cloned-databases.md) explains the setup.
+Each trial is a simulated conversation: a model plays the customer from a short brief, the real agent answers through the real MCP tools, and an operator stub decides any approval. The trial runs on its own copy of a seeded template database. It passes when the database changes are exactly what the scenario expects, its conversation checks pass, and no violation occurred: a write the policy forbids, another customer's data, a prompt leak, or an action the agent claimed but never took. A judge model then scores the conversation on seven yes-or-no criteria, reported apart from task success. [evals/SCENARIOS.md](evals/SCENARIOS.md) lists the 80 scenarios; [docs/EVALS.md](docs/EVALS.md) explains the method, and [ADR-0008](docs/adr/0008-eval-trials-on-cloned-databases.md) the setup.
+
+<!-- relay:results:start -->
+No run has been published yet. `make eval-publish RUN=evals/reports/<run>` writes this table from a committed report.
+<!-- relay:results:end -->
 
 ```bash
 make eval-selftest          # no model calls: schema, policy agreement, oracle, null agent, errors
-make eval                   # every v1 scenario, 3 trials each; prints a cost estimate and asks first
-make eval K=1 YES=1         # one trial each, without the question
-make eval-mechanism         # removing the confirmation rule must raise blocked early commits
+make eval                   # all 80 scenarios, 3 trials each, judged; prints a cost estimate and asks first
+make eval SUBSET=ci K=1     # the 10-scenario CI subset, one trial each
+make eval-gate              # what CI runs: the CI subset with retries, against evals/baseline.json
+make eval-sweep             # agent effort low and high (medium is the main run)
+make eval-models            # Claude Sonnet 5.5 and Claude Haiku 5.5 as the agent
+make eval-judge-check       # known-bad replies the judge must fail
 ```
 
-A run writes `evals/reports/<UTC time>-<git sha>/report.md` and `report.json` (configuration, every graded row, aggregates with 95% intervals). Transcripts stay local. `relay eval report <dir>` rebuilds a report from its raw rows, and `make eval RESUME=<dir>` finishes an interrupted run.
+A run writes `evals/reports/<UTC time>-<git sha>/report.md` and `report.json` (configuration, every graded row, aggregates with 95% intervals). Transcripts stay local. `make eval-triage`, `make eval-label`, `make eval-agreement` and `make eval-publish` turn a run into the published numbers; docs/EVALS.md has the workflow. No number here or in EVALS.md is typed by hand.
 
 ## Help-center search
 
@@ -108,11 +115,14 @@ backend/    Python package `relay`: API (FastAPI), MCP server, CLI, tests
             relay/mcp_server: the nine tools, identity, strict schemas
             relay/agent: turn loop, scheduler, transcript store, providers, prompt, guardrails
             relay/api: sessions, rate limits, chat, console, SSE; relay/telemetry: traces, logs
-            relay/evals: eval harness (template DB, simulator, graders, runner, reports)
+            relay/evals: eval harness (template DB, simulator, graders, judge, runner,
+            reports, labels, CI gate, publishing)
             relay/db: models and migrations; relay/seed: demo data; relay/kb: help center
 frontend/   Next.js app: store page, chat widget, operator console; lib/api: typed client; e2e/
 deploy/     Caddy and Postgres configuration
-docs/       mcp.md (Claude Desktop, Inspector), api.md (routes, events, limits), examples/,
+docs/       EVALS.md (method, results), mcp.md (Claude Desktop, Inspector), api.md (routes,
+            events, limits), examples/,
             adr/ (architecture decision records)
-evals/      Scenarios (scenarios/, redteam/, SCENARIOS.md), run reports, retrieval eval
+evals/      Scenarios (scenarios/, redteam/, SCENARIOS.md), run reports, labels/, baseline.json
+            (after the first full run), retrieval eval
 ```

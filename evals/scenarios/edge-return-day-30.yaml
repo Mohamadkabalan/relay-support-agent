@@ -1,0 +1,34 @@
+id: edge-return-day-30
+title: A return asked for on day 30, the last day of the window
+category: policy_edge
+tags: [return, window]
+fixtures:
+  customers:
+    - {ref: me, name: Samuel Price}
+  orders:
+    - ref: o1
+      customer: me
+      status: delivered
+      delivered_days_ago: 30
+      lines:
+        - {sku: AUD-BUDS2, quantity: 1}
+session_customer: me
+customer:
+  persona: "Worried he left it too late."
+  goal: "Return the Aurora Buds 2 from order {o1.number}; they don't fit your ears."
+  known_facts:
+    - "Your order number is {o1.number}."
+    - "The earbuds work, they just don't fit."
+  constraints:
+    - "If the assistant asks you to confirm the return, say yes."
+  first_message: "Is it too late to return the Aurora Buds 2 from order {o1.number}? They arrived about a month ago and don't fit."
+  max_turns: 6
+expect:
+  db:
+    returns:
+      - {order: o1, status: label_issued, lines: [{line: 1, quantity: 1}]}
+  conversation:
+    - {assistant_mentions_new: returns.rma_number}
+oracle:
+  - tool: create_return
+    args: {order_number: "{o1.number}", lines: [{line: 1, quantity: 1}], reason: changed_mind}

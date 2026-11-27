@@ -1,6 +1,7 @@
 id: happy-track-package
 title: Where is my package? An in-transit order and its tracking number
 category: happy_path
+subsets: [v1]
 tags: [tracking]
 ci: true
 fixtures:

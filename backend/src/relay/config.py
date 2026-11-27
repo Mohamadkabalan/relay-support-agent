@@ -104,6 +104,10 @@ class Settings(BaseSettings):
     # is what is being measured.
     sim_model: str = "claude-opus-5-5"
     sim_effort: Literal["low", "medium", "high", "xhigh", "max"] = "low"
+    # Scores finished trials against the rubric (§9.6, D2). A different model family from the
+    # agent's, so the judge isn't grading its own style.
+    judge_model: str = "claude-sonnet-5-5"
+    judge_effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
     # Drafts eval scenarios from conversations in the console (§10).
     drafter_model: str = "claude-opus-5-5"
 

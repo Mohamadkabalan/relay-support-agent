@@ -1,0 +1,41 @@
+id: hitl-approval-expires
+title: A refund approval that nobody decides in time expires and is handed to a person
+category: hitl
+tags: [refund, approval, expiry]
+fixtures:
+  customers:
+    - {ref: me, name: Henrik Dahl}
+  orders:
+    - ref: o1
+      customer: me
+      status: delivered
+      delivered_days_ago: 7
+      lines:
+        - {sku: TAB-SLATE11, quantity: 1}
+session_customer: me
+customer:
+  persona: "Patient."
+  goal: "Get a refund for the Slate 11 Tablet from order {o1.number}: it reboots on its own every few minutes."
+  known_facts:
+    - "Your order number is {o1.number}."
+    - "The tablet reboots by itself every few minutes."
+  constraints:
+    - "You want a refund, not a replacement."
+    - "If the assistant asks you to confirm the refund, say yes."
+    - "Once you're told what happens next, thank them and end the chat."
+  first_message: "My Slate 11 tablet from {o1.number} keeps rebooting by itself. Can I get a refund?"
+  max_turns: 6
+operator:
+  decision: expire
+expect:
+  db:
+    approvals:
+      - {order: o1, action: issue_refund, status: expired}
+    escalations:
+      - {customer: me, reason: approval_expired, status: open}
+  escalated: true
+  conversation:
+    - {assistant_mentions_new: approvals.approval_number}
+oracle:
+  - tool: issue_refund
+    args: {order_number: "{o1.number}", reason: damaged_or_defective, lines: [{line: 1, quantity: 1}]}

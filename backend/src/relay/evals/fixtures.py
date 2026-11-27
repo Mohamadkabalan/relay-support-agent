@@ -13,11 +13,21 @@ from datetime import datetime, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from relay.clock import local_date
-from relay.db.models import Customer, Operator
+from relay.db.models import Customer, HelpArticle, KbChunk, Operator, Order
 from relay.domain.address import Address
-from relay.domain.enums import OrderStatus, ShipmentStatus
+from relay.domain.enums import (
+    OrderStatus,
+    RefundChannel,
+    RefundReason,
+    ReturnReason,
+    ReturnStatus,
+    ShipmentStatus,
+)
 from relay.domain.policy_config import PolicyConfig
-from relay.evals.scenario import OrderFixture, Scenario
+from relay.evals.scenario import ArticleFixture, OrderFixture, Scenario
+from relay.kb.articles import Article
+from relay.kb.chunking import chunk_article
+from relay.kb.embeddings import Embedder
 from relay.seed import builders
 from relay.seed.builders import Ids, OrderPlan, TrackingPlan, at_local
 
@@ -42,7 +52,11 @@ class Applied:
 
 
 async def apply_fixtures(
-    session: AsyncSession, scenario: Scenario, now: datetime, policy: PolicyConfig
+    session: AsyncSession,
+    scenario: Scenario,
+    now: datetime,
+    policy: PolicyConfig,
+    embedder: Embedder | None = None,  # for article fixtures, so vector search finds them
 ) -> Applied:
     applied = Applied()
     ids = Ids()
@@ -76,10 +90,19 @@ async def apply_fixtures(
         if person.ref != scenario.session_customer:
             applied.foreign_markers |= {person.name, email, address.line1}
 
+    counters = {"rma": 900000, "refund": 90000}
     for index, spec in enumerate(scenario.fixtures.orders):
         number = spec.number or f"PV-{900001 + index}"
         plan = order_plan(spec, number, addresses[spec.customer], now, policy)
-        session.add(builders.order(ids, customers[spec.customer], plan))
+        order = builders.order(ids, customers[spec.customer], plan)
+        for line, fixture in zip(order.lines, spec.lines, strict=True):
+            if fixture.unit_price_cents is not None:
+                line.unit_price_cents = fixture.unit_price_cents
+        order.total_cents = order.shipping_cents + sum(
+            line.unit_price_cents * line.quantity for line in order.lines
+        )
+        session.add(order)
+        _history(session, ids, order, spec, now, counters)
         applied.order_numbers[spec.ref] = number
         tracking = plan.tracking
         applied.values[spec.ref] = {
@@ -89,6 +112,9 @@ async def apply_fixtures(
         }
         if spec.customer != scenario.session_customer:
             applied.foreign_markers.add(number)
+
+    for article in scenario.fixtures.articles:
+        add_article(session, article, embedder)
 
     operator = Operator(email=OPERATOR_EMAIL, display_name="Eval Operator")
     session.add(operator)
@@ -176,4 +202,78 @@ def order_plan(
         cancelled_at=cancelled_at,
         tracking=tracking,
         extra_events=extra_events,
+    )
+
+
+def _history(
+    session: AsyncSession,
+    ids: Ids,
+    order: Order,
+    spec: OrderFixture,
+    now: datetime,
+    counters: dict[str, int],
+) -> None:
+    """Returns and refunds that happened before the trial, numbered RMA-9xxxxx and RF-9xxxx."""
+    for prior in spec.returns:
+        counters["rma"] += 1
+        session.add(
+            builders.return_(
+                ids,
+                order,
+                rma_number=f"RMA-{counters['rma']}",
+                created_at=now - timedelta(days=prior.days_ago),
+                status=ReturnStatus(prior.status),
+                reason=ReturnReason(prior.reason),
+                lines={item.line: item.quantity for item in prior.lines},
+            )
+        )
+    for refund in spec.refunds:
+        counters["refund"] += 1
+        session.add(
+            builders.refund(
+                ids,
+                order,
+                refund_number=f"RF-{counters['refund']}",
+                issued_at=now - timedelta(days=refund.days_ago),
+                reason=RefundReason(refund.reason),
+                channel=RefundChannel(refund.channel),
+                lines={item.line: item.quantity for item in refund.lines},
+                shipping=refund.shipping,
+            )
+        )
+
+
+ARTICLES = uuid.UUID("0b8a3f4e-2f7d-4c41-9a51-6d1f0c9e7a11")
+
+
+def add_article(session: AsyncSession, spec: ArticleFixture, embedder: Embedder | None) -> None:
+    """A help article and its chunks, the way `relay.kb.ingest` loads the real ones."""
+    article = Article(slug=spec.slug, title=spec.title, category=spec.category, body=spec.body)
+    chunks = chunk_article(article)
+    vectors = (
+        embedder.embed_documents([f"{c.heading}\n{c.text}" for c in chunks])
+        if embedder is not None
+        else [None] * len(chunks)
+    )
+    article_id = uuid.uuid5(ARTICLES, spec.slug)
+    session.add(
+        HelpArticle(
+            id=article_id,
+            slug=spec.slug,
+            title=spec.title,
+            category=spec.category,
+            body=spec.body,
+            policy_version="eval-fixture",
+        )
+    )
+    session.add_all(
+        KbChunk(
+            id=uuid.uuid5(ARTICLES, f"{spec.slug}:{chunk.ordinal}"),
+            article_id=article_id,
+            ordinal=chunk.ordinal,
+            heading=chunk.heading,
+            text=chunk.text,
+            embedding=vector,
+        )
+        for chunk, vector in zip(chunks, vectors, strict=True)
     )

@@ -1,0 +1,41 @@
+id: multi-track-and-return
+title: Track one order and return an item from another
+category: multiple_requests
+tags: [tracking, return]
+fixtures:
+  customers:
+    - {ref: me, name: Chloe Martin}
+  orders:
+    - ref: o1
+      customer: me
+      status: in_transit
+      last_scan_days_ago: 1
+      lines:
+        - {sku: TAB-READ7, quantity: 1}
+    - ref: o2
+      customer: me
+      status: delivered
+      delivered_days_ago: 5
+      lines:
+        - {sku: WRB-STRAP, quantity: 1}
+session_customer: me
+customer:
+  persona: "Efficient; lists both things in her first message."
+  goal: "Find out where order {o1.number} is (with its tracking number), and return the sport strap from order {o2.number}, which is the wrong size."
+  known_facts:
+    - "Order {o1.number} is an e-reader you're waiting for."
+    - "Order {o2.number} has a sport strap that's too small for your wrist."
+  constraints:
+    - "If the assistant asks you to confirm the return, say yes."
+  first_message: "Two things: where's my order {o1.number}, and I need to return the strap from {o2.number}, it's too small."
+  max_turns: 8
+expect:
+  db:
+    returns:
+      - {order: o2, status: label_issued, lines: [{line: 1, quantity: 1}]}
+  conversation:
+    - {assistant_mentions: "{o1.tracking_number}"}
+    - {assistant_mentions_new: returns.rma_number}
+oracle:
+  - tool: create_return
+    args: {order_number: "{o2.number}", lines: [{line: 1, quantity: 1}], reason: wrong_item}

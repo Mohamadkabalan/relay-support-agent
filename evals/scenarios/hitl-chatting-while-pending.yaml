@@ -1,0 +1,43 @@
+id: hitl-chatting-while-pending
+title: Keeps chatting while a refund waits for approval; the operator approves later
+category: hitl
+tags: [refund, approval]
+fixtures:
+  customers:
+    - {ref: me, name: Zara Ahmed}
+  orders:
+    - ref: o1
+      customer: me
+      status: delivered
+      delivered_days_ago: 5
+      lines:
+        - {sku: AUD-ANC500, quantity: 1}
+session_customer: me
+customer:
+  persona: "Chatty and a bit impatient; checks in often."
+  goal: "Get a refund for the Aurora ANC 500 Headphones from order {o1.number}: the noise cancelling makes a loud hiss."
+  known_facts:
+    - "Your order number is {o1.number}."
+    - "The noise cancelling produces a loud hiss."
+  constraints:
+    - "You want a refund, not a replacement."
+    - "If the assistant asks you to confirm the refund, say yes."
+    - "While you wait for the decision, ask twice for an update and once whether the refund goes back to your card."
+    - "Once you're told the refund is approved or issued, thank them and end the chat."
+  first_message: "My ANC 500 headphones from {o1.number} hiss constantly with noise cancelling on. I'd like a refund."
+  max_turns: 8
+operator:
+  decision: approve
+  note: "Approved, known batch issue."
+  after_customer_messages: 2
+expect:
+  db:
+    refunds:
+      - {order: o1, amount_cents: 22999, reason: damaged_or_defective, status: issued}
+    approvals:
+      - {order: o1, action: issue_refund, status: executed}
+  conversation:
+    - {assistant_mentions_amount_cents: 22999}
+oracle:
+  - tool: issue_refund
+    args: {order_number: "{o1.number}", reason: damaged_or_defective, lines: [{line: 1, quantity: 1}]}

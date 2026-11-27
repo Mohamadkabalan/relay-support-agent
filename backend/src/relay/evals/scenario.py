@@ -70,6 +70,7 @@ class CustomerFixture(_Strict):
 class LineFixture(_Strict):
     sku: str
     quantity: int = Field(default=1, ge=1)
+    unit_price_cents: int | None = Field(default=None, ge=1)  # a sale price; default: catalog
 
 
 class CarrierEvent(_Strict):
@@ -79,6 +80,45 @@ class CarrierEvent(_Strict):
     code: str = "in_transit"
     description: str
     location: str | None = None
+
+
+class LineQuantity(_Strict):
+    line: int = Field(ge=1)  # the order line's number, from 1
+    quantity: int = Field(default=1, ge=1)
+
+
+class PriorReturn(_Strict):
+    """A return the customer started before the trial, for the quantity and velocity rules."""
+
+    status: Literal["label_issued", "in_transit", "received", "completed", "cancelled"]
+    reason: str = "changed_mind"
+    days_ago: int = 3
+    lines: list[LineQuantity] = Field(min_length=1)
+
+
+class PriorRefund(_Strict):
+    """A refund issued before the trial: `channel: agent` ones count toward the velocity rule."""
+
+    reason: Literal["damaged_or_defective", "lost_in_transit", "late_delivery", "return_received"]
+    channel: Literal["agent", "staff"] = "agent"
+    days_ago: int = 10
+    lines: list[LineQuantity] = []
+    shipping: bool = False
+
+    @model_validator(mode="after")
+    def _refunds_something(self) -> Self:
+        if not self.lines and not self.shipping:
+            raise ValueError("a prior refund needs lines or shipping: true")
+        return self
+
+
+class ArticleFixture(_Strict):
+    """A help article added to the knowledge base, for example one with a planted instruction."""
+
+    slug: str = Field(pattern=r"^[a-z0-9][a-z0-9-]+$")
+    title: str
+    category: str = "returns"
+    body: str
 
 
 class OrderFixture(_Strict):
@@ -93,11 +133,23 @@ class OrderFixture(_Strict):
     shipping_cents: int = 599
     customer_note: str | None = None
     carrier_events: list[CarrierEvent] = []
+    returns: list[PriorReturn] = []
+    refunds: list[PriorRefund] = []
+
+    @model_validator(mode="after")
+    def _lines_exist(self) -> Self:
+        priors: list[PriorReturn | PriorRefund] = [*self.returns, *self.refunds]
+        for prior in priors:
+            for item in prior.lines:
+                if item.line > len(self.lines):
+                    raise ValueError(f"order {self.ref} has no line {item.line}")
+        return self
 
 
 class Fixtures(_Strict):
     customers: list[CustomerFixture] = Field(min_length=1)
     orders: list[OrderFixture] = []
+    articles: list[ArticleFixture] = []
 
 
 class SimulatedCustomer(_Strict):
@@ -125,10 +177,16 @@ class SimulatedCustomer(_Strict):
 
 
 class Operator(_Strict):
-    """What the operator stub does with an approval the agent requests (§9.1)."""
+    """What the operator stub does with an approval the agent requests (§9.1).
 
-    decision: Literal["approve", "reject", "leave_pending"] = "leave_pending"
+    `expire` moves the trial's clock past the approval's deadline and runs the expiry job, which
+    expires it and opens an escalation. `after_customer_messages` holds the decision until the
+    customer has sent that many more messages, for a customer who keeps chatting while waiting.
+    """
+
+    decision: Literal["approve", "reject", "expire", "leave_pending"] = "leave_pending"
     note: str | None = None
+    after_customer_messages: int = Field(default=0, ge=0)
 
 
 class Check(_Strict):
@@ -166,6 +224,9 @@ class Expect(_Strict):
     # every snapshotted table must stay unchanged (§9.3).
     db: dict[str, list[dict[str, Any]]] = {}
     escalated: bool = False
+    # Escalating is acceptable but not required (a red-team attack is fair to hand to a person):
+    # an escalation is then neither missing nor unexpected.
+    may_escalate: bool = False
     conversation: list[Check] = []
     turn_limit_ok: bool = False  # whether stopping at the customer-turn limit is acceptable
     expected_tool_errors: list[str] = []  # error codes this scenario provokes on purpose
@@ -189,7 +250,7 @@ class Scenario(_Strict):
     title: str
     category: Category
     tags: list[str] = []
-    subsets: list[str] = ["v1"]
+    subsets: list[str] = []  # named groups, such as v1 (the Phase 4 scenarios)
     ci: bool = False
     severity: Severity | None = None  # red team only
     attack: str | None = None  # red team only
@@ -198,7 +259,7 @@ class Scenario(_Strict):
     customer: SimulatedCustomer
     operator: Operator = Operator()
     expect: Expect
-    judge: bool = False  # the judge arrives in Phase 7
+    judge: bool = True  # whether the judge (§9.6) scores this scenario's trials
     # The right actions, done directly: the oracle self-test applies them and the grader must
     # pass. In a scenario where nothing may change, `tempting` (optional) is the write the
     # customer pushes for; the policy-agreement self-test checks that the server refuses it.
@@ -223,6 +284,8 @@ class Scenario(_Strict):
         red_team = self.category is Category.RED_TEAM
         if red_team != (self.severity is not None):
             raise ValueError("severity is required for red-team scenarios and only for them")
+        if self.expect.may_escalate and (self.expect.escalated or "escalations" in self.expect.db):
+            raise ValueError("may_escalate is for scenarios that don't expect an escalation")
         if self.expect.db and not self.oracle:
             raise ValueError("a scenario that expects changes needs oracle steps")
         if self.tempting is not None and self.expect.db:
@@ -301,6 +364,10 @@ def select(
     chosen = scenarios
     if subset == "ci":
         chosen = [s for s in chosen if s.ci]
+    elif subset == "regular":
+        chosen = [s for s in chosen if not s.red_team]
+    elif subset == "red_team":
+        chosen = [s for s in chosen if s.red_team]
     elif subset:
         chosen = [s for s in chosen if subset in s.subsets]
     if ids:

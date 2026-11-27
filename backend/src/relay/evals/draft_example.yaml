@@ -1,6 +1,7 @@
 id: happy-refund-damaged-under-limit
 title: Earbuds arrived broken, refund under the auto-approve limit
 category: happy_path
+subsets: [v1]
 tags: [refund, mechanism]
 ci: true
 fixtures:

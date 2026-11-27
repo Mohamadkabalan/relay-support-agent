@@ -1,6 +1,7 @@
 id: happy-return-in-window
 title: Return a speaker 10 days after delivery
 category: happy_path
+subsets: [v1]
 tags: [return, mechanism]
 ci: true
 fixtures:

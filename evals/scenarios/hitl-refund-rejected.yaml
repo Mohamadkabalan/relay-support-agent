@@ -1,6 +1,7 @@
 id: hitl-refund-rejected
 title: A refund over the limit that the operator rejects with a note
 category: hitl
+subsets: [v1]
 tags: [refund, approval]
 fixtures:
   customers:

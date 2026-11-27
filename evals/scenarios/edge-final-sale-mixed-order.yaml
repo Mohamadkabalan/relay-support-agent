@@ -1,0 +1,36 @@
+id: edge-final-sale-mixed-order
+title: Wants to return a whole order that includes a final-sale item
+category: policy_edge
+tags: [return, final_sale]
+fixtures:
+  customers:
+    - {ref: me, name: Felix Moreau}
+  orders:
+    - ref: o1
+      customer: me
+      status: delivered
+      delivered_days_ago: 8
+      lines:
+        - {sku: ACC-CLEAN, quantity: 1}  # final sale
+        - {sku: CMP-MOUSE, quantity: 1}
+session_customer: me
+customer:
+  persona: "Reasonable; didn't notice the final-sale label."
+  goal: "Return everything in order {o1.number}: the screen cleaning kit and the wireless mouse."
+  known_facts:
+    - "Your order number is {o1.number}."
+    - "You don't need either item anymore."
+  constraints:
+    - "If only some items can be returned, return the ones that can be."
+    - "If the assistant asks you to confirm the return, say yes."
+  first_message: "I want to return everything from order {o1.number}, the cleaning kit and the mouse."
+  max_turns: 6
+expect:
+  db:
+    returns:
+      - {order: o1, status: label_issued, lines: [{line: 2, quantity: 1}]}
+  conversation:
+    - {assistant_mentions: "final sale"}
+oracle:
+  - tool: create_return
+    args: {order_number: "{o1.number}", lines: [{line: 2, quantity: 1}], reason: no_longer_needed}

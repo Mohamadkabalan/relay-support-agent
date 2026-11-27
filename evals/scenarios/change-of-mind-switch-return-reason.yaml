@@ -1,0 +1,38 @@
+id: change-of-mind-switch-return-reason
+title: Starts a return as "changed my mind", then says the item is actually faulty
+category: change_of_mind
+tags: [return]
+fixtures:
+  customers:
+    - {ref: me, name: Paula Esposito}
+  orders:
+    - ref: o1
+      customer: me
+      status: delivered
+      delivered_days_ago: 9
+      lines:
+        - {sku: WRB-PULSE4, quantity: 1}
+session_customer: me
+customer:
+  persona: "Hesitant at first, then more open."
+  goal: "Send the Pulse 4 Smartwatch from order {o1.number} back with a return, with the reason recorded as defective: the screen flickers."
+  known_facts:
+    - "Your order number is {o1.number}."
+  hidden_facts:
+    - "The screen flickers every few minutes."
+  constraints:
+    - "Start by saying you just don't want the watch anymore."
+    - "When the assistant describes the return, before confirming, say that actually the screen flickers, so it's defective, and you'd like that to be the reason."
+    - "You want to return the watch, not keep it for a refund."
+    - "If the assistant asks you to confirm the updated return, say yes."
+  first_message: "I don't really want the smartwatch from order {o1.number} anymore. Can I return it?"
+  max_turns: 8
+expect:
+  db:
+    returns:
+      - {order: o1, reason: damaged_or_defective, status: label_issued, lines: [{line: 1, quantity: 1}]}
+  conversation:
+    - {assistant_mentions_new: returns.rma_number}
+oracle:
+  - tool: create_return
+    args: {order_number: "{o1.number}", lines: [{line: 1, quantity: 1}], reason: damaged_or_defective}

@@ -1,0 +1,47 @@
+id: multi-refund-and-address
+title: A damaged-item refund on one order and an address change on another
+category: multiple_requests
+tags: [refund, address]
+fixtures:
+  customers:
+    - {ref: me, name: Arjun Mehta}
+  orders:
+    - ref: o1
+      customer: me
+      status: delivered
+      delivered_days_ago: 2
+      lines:
+        - {sku: HOM-BULB4, quantity: 1}
+    - ref: o2
+      customer: me
+      status: processing
+      lines:
+        - {sku: HOM-VAC, quantity: 1}
+session_customer: me
+customer:
+  persona: "Polite, organized, numbers his requests."
+  goal: "Get a refund for the smart bulbs in order {o1.number} (two of the four arrived shattered, you want the whole pack refunded), and send order {o2.number} to 9 Riverside Drive, Albany, NY 12207."
+  known_facts:
+    - "In order {o1.number}, the bulb 4-pack arrived with two bulbs shattered."
+    - "Order {o2.number} should go to 9 Riverside Drive, Albany, NY 12207, United States."
+  constraints:
+    - "You want a refund for the bulbs, not a replacement."
+    - "If the assistant asks you to confirm a change, say yes."
+  first_message: "Hi! 1) The bulb pack from {o1.number} arrived with two bulbs shattered, I'd like a refund. 2) Please ship {o2.number} to 9 Riverside Drive, Albany, NY 12207."
+  max_turns: 8
+expect:
+  db:
+    refunds:
+      - {order: o1, reason: damaged_or_defective, channel: agent, amount_cents: 4999, status: issued}
+    orders:
+      - order: o2
+        shipping_address: {line1: "9 Riverside Drive", city: Albany, state: NY, postal_code: "12207"}
+  conversation:
+    - {assistant_mentions_amount_cents: 4999}
+oracle:
+  - tool: issue_refund
+    args: {order_number: "{o1.number}", reason: damaged_or_defective, lines: [{line: 1, quantity: 1}]}
+  - tool: update_shipping_address
+    args:
+      order_number: "{o2.number}"
+      address: {recipient_name: "{me.name}", line1: "9 Riverside Drive", city: Albany, state: NY, postal_code: "12207", country: US}

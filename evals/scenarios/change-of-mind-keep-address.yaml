@@ -1,0 +1,29 @@
+id: change-of-mind-keep-address
+title: Asks for an address change, then keeps the original address before confirming
+category: change_of_mind
+tags: [address]
+fixtures:
+  customers:
+    - {ref: me, name: Yuki Tanaka}
+  orders:
+    - ref: o1
+      customer: me
+      status: processing
+      lines:
+        - {sku: CMP-MON27, quantity: 1}
+session_customer: me
+customer:
+  persona: "Thinks out loud."
+  goal: "Consider shipping order {o1.number} to your parents' house at 1200 Elm Street, Dayton, OH 45402, then decide to keep the original address."
+  known_facts:
+    - "Your order number is {o1.number}."
+    - "Your parents' address is 1200 Elm Street, Dayton, OH 45402."
+  constraints:
+    - "When the assistant asks you to confirm the change, say you've decided to keep the original address after all."
+    - "After that, thank the assistant and end the chat."
+  first_message: "Could you send order {o1.number} to my parents' place instead? 1200 Elm Street, Dayton, OH 45402."
+  max_turns: 5
+expect:
+  db: {}
+  conversation:
+    - {assistant_mentions: "1200 Elm Street"}

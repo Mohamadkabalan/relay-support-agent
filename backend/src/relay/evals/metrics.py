@@ -71,6 +71,7 @@ def aggregate(rows: list[dict[str, Any]], k: int, errors: int = 0) -> dict[str, 
     violation_ids = Counter(v["id"] for r in rows for v in r["violations"])
     attempt_kinds = Counter(a["kind"] for r in rows for a in r["attempts"])
     expected_escalation = [r["checks"]["escalation"]["expected"] for r in rows]
+    optional_escalation = [r["checks"]["escalation"].get("optional", False) for r in rows]
     actual_escalation = [r["escalated"] for r in rows]
     tool_calls = sum(r["tool_calls"] for r in rows)
     tool_errors = Counter[str]()
@@ -80,6 +81,7 @@ def aggregate(rows: list[dict[str, Any]], k: int, errors: int = 0) -> dict[str, 
         expected_errors.update(row["expected_tool_errors"])
     agent_costs = [r["agent_cost_micros"] / 1e6 for r in rows]
     sim_costs = [(r["simulator_cost_micros"] or 0) / 1e6 for r in rows]
+    judge_costs = [(r.get("judge_cost_micros") or 0) / 1e6 for r in rows]
     ttft = [ms for r in rows for ms in r["turn_ttft_ms"]]
     latency = [ms for r in rows for ms in r["turn_latency_ms"]]
     walls = [r["wall_s"] for r in rows]
@@ -115,7 +117,13 @@ def aggregate(rows: list[dict[str, Any]], k: int, errors: int = 0) -> dict[str, 
                 e and a for e, a in zip(expected_escalation, actual_escalation, strict=True)
             ),
             "unnecessary": sum(
-                a and not e for e, a in zip(expected_escalation, actual_escalation, strict=True)
+                a and not e and not o
+                for e, o, a in zip(
+                    expected_escalation, optional_escalation, actual_escalation, strict=True
+                )
+            ),
+            "optional": sum(
+                a and o for o, a in zip(optional_escalation, actual_escalation, strict=True)
             ),
             "missed": sum(
                 e and not a for e, a in zip(expected_escalation, actual_escalation, strict=True)
@@ -139,8 +147,10 @@ def aggregate(rows: list[dict[str, Any]], k: int, errors: int = 0) -> dict[str, 
             "agent_complete": all(r["agent_cost_complete"] for r in rows),
             "simulator_mean": _mean(sim_costs, 4),
             "simulator_total": round(sum(sim_costs), 4),
+            "judge_total": round(sum(judge_costs), 4),
             "per_trial_mean": _mean(
-                [a + s for a, s in zip(agent_costs, sim_costs, strict=True)], 4
+                [a + s + j for a, s, j in zip(agent_costs, sim_costs, judge_costs, strict=True)],
+                4,
             ),
         },
         "latency_ms": {
@@ -154,6 +164,7 @@ def aggregate(rows: list[dict[str, Any]], k: int, errors: int = 0) -> dict[str, 
             "trial_p90": percentile(walls, 90),
             "clone_mean_ms": _mean([r["clone_ms"] for r in rows], 0),
         },
+        "judge": judge_block(rows),
         "counts": {
             "infrastructure_errors": errors,
             "max_tokens_stops": sum(r["max_tokens_stops"] for r in rows),
@@ -161,6 +172,31 @@ def aggregate(rows: list[dict[str, Any]], k: int, errors: int = 0) -> dict[str, 
             "fallback_calls": sum(r["fallback_calls"] for r in rows),
             "simulator_refusals": sum(1 for r in rows if r["simulator_refused"]),
         },
+    }
+
+
+def judge_block(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Judge pass rates over the trials that got a verdict (§9.6), per criterion and overall."""
+    verdicts = [r["judge"] for r in rows if r.get("judge") and "criteria" in r["judge"]]
+    errors = sum(1 for r in rows if r.get("judge") and "error" in r["judge"])
+    criteria: dict[str, dict[str, Any]] = {}
+    for verdict in verdicts:
+        for key, item in verdict["criteria"].items():
+            block = criteria.setdefault(key, {"passed": 0, "n": 0})
+            block["passed"] += int(item["pass"])
+            block["n"] += 1
+    costs = [(r.get("judge_cost_micros") or 0) / 1e6 for r in rows if r.get("judge")]
+    return {
+        "judged": len(verdicts),
+        "errors": errors,
+        "rubrics": sorted({v["rubric"] for v in verdicts}),
+        "all_pass": rate(sum(1 for v in verdicts if v["all_pass"]), len(verdicts)),
+        "criteria": {
+            key: rate(block["passed"], block["n"]) for key, block in sorted(criteria.items())
+        },
+        "unbacked_claims": sum(len(v.get("unbacked_claims", [])) for v in verdicts),
+        "cost_total": round(sum(costs), 4),
+        "cost_mean": _mean(costs, 4),
     }
 
 

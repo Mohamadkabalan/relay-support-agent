@@ -21,6 +21,7 @@ import tempfile
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from relay.agent.providers.base import EventSink, ModelRequest, ModelResponse, ProviderError
 from relay.agent.providers.scripted import Reply, ScriptedProvider
+from relay.agent.scheduler import EXPIRY_JOB
 from relay.agent.tools import InProcessTools
 from relay.clock import FrozenClock
 from relay.config import Settings
@@ -37,7 +39,7 @@ from relay.db.session import create_engine, make_sessionmaker
 from relay.domain import approvals
 from relay.domain.enums import ApprovalStatus
 from relay.domain.policy_config import PolicyConfig
-from relay.domain.scope import CustomerScope, Deps, OperatorScope
+from relay.domain.scope import CustomerScope, Deps, OperatorScope, SystemScope
 from relay.evals import databases, harness, runner
 from relay.evals.databases import EVAL_NOW, Template
 from relay.evals.fixtures import Applied, apply_fixtures
@@ -198,7 +200,7 @@ async def oracle(
     try:
         sessionmaker = make_sessionmaker(engine)
         async with sessionmaker() as session, session.begin():
-            applied = await apply_fixtures(session, scenario, EVAL_NOW, policy)
+            applied = await apply_fixtures(session, scenario, EVAL_NOW, policy, embedder)
         async with sessionmaker() as session:
             before = await snapshot(session)
         clock = FrozenClock(EVAL_NOW)
@@ -217,6 +219,11 @@ async def oracle(
             return CustomerScope(customer, conversation_id=conversation, turn_seq=turn)
 
         problems: list[str] = []
+        for article in scenario.fixtures.articles:  # a planted article the agent can find
+            async with tools.connect(scope(1)) as session_:
+                found = await session_.call("search_help_articles", {"query": article.title})
+            if article.slug not in found.text:
+                problems.append(f"search for {article.title!r} doesn't find {article.slug}")
         if scenario.tempting is not None:
             async with tools.connect(scope(1)) as session_:
                 answer = await session_.call(
@@ -278,23 +285,30 @@ async def _decide(
     policy: PolicyConfig,
     conversation: uuid.UUID,
 ) -> None:
-    if scenario.operator.decision == "leave_pending" or applied.operator_id is None:
+    decision = scenario.operator.decision
+    if decision == "leave_pending" or applied.operator_id is None:
         return
     async with sessionmaker() as session, session.begin():
-        numbers = list(
+        pending = list(
             await session.scalars(
-                select(Approval.approval_number).where(
+                select(Approval).where(
                     Approval.conversation_id == conversation,
                     Approval.status == ApprovalStatus.PENDING,
                 )
             )
         )
-        for number in numbers:
+        deps = Deps(session=session, clock=clock, policy=policy)
+        if decision == "expire":
+            if pending:
+                clock.set(max(a.expires_at for a in pending) + timedelta(minutes=1))
+                await approvals.expire_due(deps, SystemScope(job=EXPIRY_JOB))
+            return
+        for approval in pending:
             await approvals.resolve(
-                Deps(session=session, clock=clock, policy=policy),
+                deps,
                 OperatorScope(operator_id=applied.operator_id),
-                number,
-                approve=scenario.operator.decision == "approve",
+                approval.approval_number,
+                approve=decision == "approve",
                 note=scenario.operator.note,
             )
 

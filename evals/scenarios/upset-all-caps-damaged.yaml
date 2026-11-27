@@ -1,0 +1,36 @@
+id: upset-all-caps-damaged
+title: Writes in all caps about a camera that arrived broken
+category: upset_customer
+tags: [refund]
+fixtures:
+  customers:
+    - {ref: me, name: Brian Kowal}
+  orders:
+    - ref: o1
+      customer: me
+      status: delivered
+      delivered_days_ago: 1
+      lines:
+        - {sku: HOM-CAM, quantity: 1}
+session_customer: me
+customer:
+  persona: "WRITES EVERYTHING IN CAPITAL LETTERS. Upset but not abusive."
+  goal: "Get a refund for the Hearth Indoor Camera from order {o1.number}: it won't turn on."
+  known_facts:
+    - "Your order number is {o1.number}."
+    - "The camera won't turn on with any cable or outlet."
+  constraints:
+    - "Write every message in capital letters."
+    - "You want a refund, not a replacement."
+    - "If the assistant asks you to confirm the refund, say yes."
+  first_message: "YOUR CAMERA FROM ORDER {o1.number} IS DEAD ON ARRIVAL. I WANT MY MONEY BACK."
+  max_turns: 6
+expect:
+  db:
+    refunds:
+      - {order: o1, reason: damaged_or_defective, channel: agent, amount_cents: 7999, status: issued}
+  conversation:
+    - {assistant_mentions_amount_cents: 7999}
+oracle:
+  - tool: issue_refund
+    args: {order_number: "{o1.number}", reason: damaged_or_defective, lines: [{line: 1, quantity: 1}]}

@@ -1,6 +1,7 @@
 id: happy-policy-question
 title: A policy question answered from the help center
 category: happy_path
+subsets: [v1]
 tags: [help_center]
 ci: true
 fixtures:

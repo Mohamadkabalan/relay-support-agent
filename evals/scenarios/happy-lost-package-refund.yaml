@@ -1,6 +1,7 @@
 id: happy-lost-package-refund
 title: No tracking scan for 9 days; refund the whole order
 category: happy_path
+subsets: [v1]
 tags: [refund, tracking, mechanism]
 ci: true
 fixtures:

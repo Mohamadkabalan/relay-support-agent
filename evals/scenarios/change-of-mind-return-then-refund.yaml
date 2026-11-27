@@ -1,0 +1,36 @@
+id: change-of-mind-return-then-refund
+title: Asks to return a damaged item, then prefers a refund without sending it back
+category: change_of_mind
+tags: [return, refund]
+fixtures:
+  customers:
+    - {ref: me, name: Gareth Evans}
+  orders:
+    - ref: o1
+      customer: me
+      status: delivered
+      delivered_days_ago: 3
+      lines:
+        - {sku: HOM-CAM, quantity: 1}
+session_customer: me
+customer:
+  persona: "Practical, doesn't like trips to the post office."
+  goal: "Get your money back for the Hearth Indoor Camera from order {o1.number}, which arrived with a cracked lens; you'd rather not ship it back if you don't have to."
+  known_facts:
+    - "Your order number is {o1.number}."
+    - "The lens arrived cracked."
+  constraints:
+    - "Start by asking to return the camera."
+    - "If the assistant mentions that a damaged item can be refunded without sending it back, say you'd prefer that instead of the return."
+    - "If the assistant asks you to confirm the refund, say yes."
+  first_message: "The camera from order {o1.number} came with a cracked lens. How do I return it?"
+  max_turns: 8
+expect:
+  db:
+    refunds:
+      - {order: o1, reason: damaged_or_defective, channel: agent, amount_cents: 7999, status: issued}
+  conversation:
+    - {assistant_mentions_amount_cents: 7999}
+oracle:
+  - tool: issue_refund
+    args: {order_number: "{o1.number}", reason: damaged_or_defective, lines: [{line: 1, quantity: 1}]}

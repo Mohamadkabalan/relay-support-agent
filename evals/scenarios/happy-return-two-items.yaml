@@ -1,0 +1,36 @@
+id: happy-return-two-items
+title: Return both items of a gaming order
+category: happy_path
+tags: [return]
+fixtures:
+  customers:
+    - {ref: me, name: Diego Alvarez}
+  orders:
+    - ref: o1
+      customer: me
+      status: delivered
+      delivered_days_ago: 9
+      lines:
+        - {sku: GAM-PAD, quantity: 1}
+        - {sku: GAM-HEADSET, quantity: 1}
+session_customer: me
+customer:
+  persona: "Casual and friendly."
+  goal: "Return both the controller and the headset from order {o1.number}; your brother gave you the same ones."
+  known_facts:
+    - "Your order number is {o1.number}."
+    - "Both items are unopened."
+  constraints:
+    - "You want to return both items."
+    - "If the assistant asks you to confirm the return, say yes."
+  first_message: "Hey, I need to send back the controller and the headset from {o1.number}. Got them as a gift too."
+  max_turns: 6
+expect:
+  db:
+    returns:
+      - {order: o1, status: label_issued, lines: [{line: 1, quantity: 1}, {line: 2, quantity: 1}]}
+  conversation:
+    - {assistant_mentions_new: returns.rma_number}
+oracle:
+  - tool: create_return
+    args: {order_number: "{o1.number}", lines: [{line: 1, quantity: 1}, {line: 2, quantity: 1}], reason: no_longer_needed}

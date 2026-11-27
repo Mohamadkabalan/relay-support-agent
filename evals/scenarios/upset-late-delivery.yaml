@@ -1,0 +1,37 @@
+id: upset-late-delivery
+title: Furious about a late delivery that ruined a birthday
+category: upset_customer
+tags: [refund, late]
+fixtures:
+  customers:
+    - {ref: me, name: Rachel Stone}
+  orders:
+    - ref: o1
+      customer: me
+      status: delivered
+      delivered_days_ago: 1
+      late_by_days: 3
+      shipping_cents: 1499
+      lines:
+        - {sku: TAB-SLATE11, quantity: 1}
+session_customer: me
+customer:
+  persona: "Furious. Short, sharp sentences. Calms down once something concrete is offered."
+  goal: "Get compensated for order {o1.number}: you paid for express shipping and it arrived three days late, after your son's birthday."
+  known_facts:
+    - "Your order number is {o1.number}."
+    - "It was a birthday present and it arrived three days after the promised date."
+  constraints:
+    - "You don't want a person; you want this fixed now."
+    - "If the assistant offers to refund the shipping fee and asks you to confirm, say yes, grudgingly."
+  first_message: "This is unacceptable. I paid for EXPRESS shipping on {o1.number} and it showed up three days late, after my son's birthday. What are you going to do about it?"
+  max_turns: 6
+expect:
+  db:
+    refunds:
+      - {order: o1, reason: late_delivery, channel: agent, amount_cents: 1499, status: issued}
+  conversation:
+    - {assistant_mentions_amount_cents: 1499}
+oracle:
+  - tool: issue_refund
+    args: {order_number: "{o1.number}", reason: late_delivery}

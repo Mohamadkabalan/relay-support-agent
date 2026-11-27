@@ -1,0 +1,36 @@
+id: multi-question-then-return
+title: Asks how returns work, then returns an item
+category: multiple_requests
+tags: [policy, return]
+fixtures:
+  customers:
+    - {ref: me, name: Ellen Park}
+  orders:
+    - ref: o1
+      customer: me
+      status: delivered
+      delivered_days_ago: 11
+      lines:
+        - {sku: CAM-TRIPOD, quantity: 1}
+session_customer: me
+customer:
+  persona: "Careful; wants to understand before committing."
+  goal: "Learn how long you have to return things and whether return shipping costs anything, then return the travel tripod from order {o1.number}."
+  known_facts:
+    - "Your order number is {o1.number}."
+    - "The tripod is too heavy for hiking."
+  constraints:
+    - "Ask your policy questions first, before mentioning the order."
+    - "If the assistant asks you to confirm the return, say yes."
+  first_message: "How long do I have to return something, and do I pay for return shipping?"
+  max_turns: 8
+expect:
+  db:
+    returns:
+      - {order: o1, status: label_issued, lines: [{line: 1, quantity: 1}]}
+  conversation:
+    - {assistant_mentions: "30 days"}
+    - {assistant_mentions_new: returns.rma_number}
+oracle:
+  - tool: create_return
+    args: {order_number: "{o1.number}", lines: [{line: 1, quantity: 1}], reason: no_longer_needed}

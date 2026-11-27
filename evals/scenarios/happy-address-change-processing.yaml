@@ -1,6 +1,7 @@
 id: happy-address-change-processing
 title: Change the shipping address of an order that hasn't shipped
 category: happy_path
+subsets: [v1]
 tags: [address, mechanism]
 ci: true
 fixtures:

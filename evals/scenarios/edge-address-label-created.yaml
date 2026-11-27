@@ -1,0 +1,40 @@
+id: edge-address-label-created
+title: An address change after the shipping label exists needs a reroute; the operator approves
+category: policy_edge
+tags: [address, approval]
+fixtures:
+  customers:
+    - {ref: me, name: Ruth Abernathy}
+  orders:
+    - ref: o1
+      customer: me
+      status: label_created
+      lines:
+        - {sku: WRB-BAND3, quantity: 1}
+session_customer: me
+customer:
+  persona: "Organized; mentions she's moving this week."
+  goal: "Have order {o1.number} delivered to your new address: 410 Spruce Court, Boulder, CO 80302."
+  known_facts:
+    - "Your order number is {o1.number}."
+    - "Your new address is 410 Spruce Court, Boulder, CO 80302, United States."
+  constraints:
+    - "If the assistant asks you to confirm the change, say yes."
+    - "Once you're told the change is approved or done, thank them and end the chat."
+  first_message: "Can you change the shipping address on {o1.number}? I'm moving to 410 Spruce Court, Boulder, CO 80302."
+  max_turns: 6
+operator:
+  decision: approve
+  note: "Carrier confirmed the reroute."
+expect:
+  db:
+    orders:
+      - order: o1
+        shipping_address: {line1: "410 Spruce Court", city: Boulder, state: CO, postal_code: "80302"}
+    approvals:
+      - {order: o1, action: change_address, status: executed}
+oracle:
+  - tool: update_shipping_address
+    args:
+      order_number: "{o1.number}"
+      address: {recipient_name: "{me.name}", line1: "410 Spruce Court", city: Boulder, state: CO, postal_code: "80302", country: US}

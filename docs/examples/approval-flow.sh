@@ -58,7 +58,7 @@ say "Yes, please go ahead with the full refund to my card."
 
 echo "== 3. Approve it as the demo operator (same browser, so it sees Dana's request)"
 call POST /auth/demo-operator | json 'd["operator"]'
-queue=$(call GET /console/approvals)
+queue=$(call GET "/console/approvals?status=pending")
 approval=$(json 'd[0]["approval_number"] if d else ""' <<< "$queue")
 if [[ -z $approval ]]; then
   echo "Nothing is waiting for approval: the agent didn't submit the refund in two turns." >&2

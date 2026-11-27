@@ -21,6 +21,8 @@ out/
 *.tsbuildinfo
 next-env.d.ts
 npm-debug.log*
+frontend/playwright-report/
+frontend/test-results/
 
 # Eval outputs: reports are committed, transcripts stay local (PLAN.md §9.11)
 evals/reports/*/transcripts/

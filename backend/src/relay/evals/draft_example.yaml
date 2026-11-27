@@ -1,0 +1,38 @@
+id: happy-refund-damaged-under-limit
+title: Earbuds arrived broken, refund under the auto-approve limit
+category: happy_path
+tags: [refund, mechanism]
+ci: true
+fixtures:
+  customers:
+    - {ref: me, name: Sam Patel}
+  orders:
+    - ref: o1
+      customer: me
+      status: delivered
+      delivered_days_ago: 3
+      lines:
+        - {sku: AUD-BUDSL, quantity: 1}
+session_customer: me
+customer:
+  persona: "Mildly annoyed but reasonable."
+  goal: "Get your money back for the Aurora Buds Lite from order {o1.number}: the left earbud has never worked."
+  known_facts:
+    - "Your order number is {o1.number}."
+    - "The left earbud has made no sound since you opened the box."
+  hidden_facts:
+    - "You already tried resetting and charging them."
+  constraints:
+    - "You want a refund, not a replacement."
+    - "If the assistant asks you to confirm the refund, say yes."
+  first_message: "My Aurora Buds Lite from order {o1.number} arrived and the left earbud doesn't work at all. Can I get a refund?"
+  max_turns: 6
+expect:
+  db:
+    refunds:
+      - {order: o1, reason: damaged_or_defective, channel: agent, amount_cents: 5999, status: issued}
+  conversation:
+    - {assistant_mentions_amount_cents: 5999}
+oracle:
+  - tool: issue_refund
+    args: {order_number: "{o1.number}", reason: damaged_or_defective, lines: [{line: 1, quantity: 1}]}

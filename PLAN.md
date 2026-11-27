@@ -1,6 +1,7 @@
 # Relay: design and implementation plan
 
 > **Status:** decisions D1–D4 settled on 2026-11-22. Phases 0 to 5 are merged on `main`; Phases 6 to 8 are in progress. The Phase 4 pilot eval run has not happened yet, so this document contains no eval results.
+metrics and scenario drafts), a key-free scripted demo agent, a typed API client and Playwright smoke tests)
 > Every version, model ID and API behavior in this plan was checked on 2026-11-22 against PyPI, npm, Docker Hub, the Anthropic docs (platform.claude.com/docs) and the MCP Python SDK docs (py.sdk.modelcontextprotocol.io). The cost figures in §9.12 are pre-implementation estimates and are labeled as such. There are no eval results yet, and none appear in this document.
 
 ## Contents
@@ -422,7 +423,8 @@ class ModelResponse:
 
 - **AnthropicProvider** uses the settings in §5.6.
 - **OpenAIProvider** uses the Responses API, with function tools built from the same manifest. Our trusted `system` items become developer messages. The model comes from the environment (`RELAY_OPENAI_MODEL`, default `gpt-5.5`, which is in openai 3.60.0's model list). It passes the same contract tests against a fake API, has not been run against the live API, and is not used for the published numbers.
-- **ScriptedProvider** replays a script of responses and makes assertions about the requests it receives. It powers the integration tests, the Playwright smoke test, and demos without an API key.
+- **ScriptedProvider** replays a script of responses and makes assertions about the requests it receives. It powers the integration tests.
+- **DemoProvider** (`RELAY_PROVIDER=scripted`, added in Phase 6) is a rule-based stand-in built on it: it reads the transcript and tells one story through the real tools (a damaged item, the refund preview, the customer's yes, the commit, the approval outcome), and hands off when asked for a human. It powers the key-free demo and the Playwright smoke test. It is not an agent and is never measured.
 
 The provider and model are pinned per conversation. Switching provider means starting a new conversation.
 
@@ -1361,6 +1363,25 @@ Each phase ends the same way: every test and linter passes, the change is review
 
 **Manual check:** click through the demo flow locally.
 
+**Delivered** (2026-11-26), with these choices made along the way:
+
+- **Code:**
+  - `frontend/app/`: the store page with the persona picker, and the console: conversations, the replay, approvals, escalations, metrics and drafts.
+  - `frontend/components/`: the chat widget, the draft viewer and shared UI. `frontend/lib/`: the typed client, the event-stream hook and formatting.
+  - `frontend/e2e/`: the Playwright smoke test.
+  - Backend: `relay/agent/providers/demo.py`, `relay/api/routes/metrics.py` and `drafts.py`, `relay/evals/drafts.py`, migration `0004` (`scenario_drafts`), `relay api openapi` and `relay eval import-drafts`.
+- **Key-free demo:** `RELAY_PROVIDER=scripted` runs a rule-based demo agent through the production loop, tools, policy, approvals and events (see §5.11). The browser test uses it, so the test covers everything but the model. Its calls cost nothing and settle the spend cap.
+- **Typed client:** `openapi-typescript` 7.13.0, the latest, declares a peer of TypeScript 5. Rather than loosening peer resolution for the whole tree, it runs through `npx` (`make api-types`), and the generated `schema.d.ts` and `openapi.json` are committed. CI regenerates both and fails on a difference.
+- **Chat widget:** the transcript comes from the API. The event stream adds streaming text, status labels, approval cards, retractions and turn ends, and each turn end refreshes the transcript. The input stays disabled until the conversation exists; the browser test found that a fast first message was otherwise dropped.
+- **Rate limits (changed):** the per-IP chat limit now counts writes only (start, send, feedback, close). The widget's reads and event streams would otherwise exhaust 30 a minute for a few users behind one address. Sending keeps its per-browser limit.
+- **Lists:** the approvals and escalations endpoints return every status unless `?status=` is given (they defaulted to pending and open); the console asks for what it shows.
+- **Trace links:** the replay links each turn to `/redirects/traces/<trace id>` and the conversation to `/redirects/sessions/<conversation id>`. These are routes in Phoenix 22's own router (found in its bundle), checked by following both in a browser to the trace and session pages.
+- **Dashboard:** the rates are stat tiles that show their definitions. Conversations per day is the one chart: one series (no legend), slot-1 blue of the reference palette, bars at most 24 px with rounded tops, a hover tooltip and a table of the numbers. Animation is off.
+- **"Create eval scenario":** the drafter (`claude-opus-5-5`, structured output) gets the transcript, the tool results and the operator's note. The scenario format has free-form maps that strict structured outputs can't express, so the model returns the YAML in a two-field JSON envelope. The draft is `valid` only if it passes the suite's own scenario validation and contains none of the customer's real name, email, phone, address lines or postal code, and no email or phone number outside `eval.example`. It runs in the background, under the spend cap. Without a key the console answers 503.
+- **Playwright** runs in `mcr.microsoft.com/playwright:v1.65.1-noble`. Chromium on the host (WSL) lacks system libraries, and the image is what CI runs. The stack for the test raises `RELAY_LOGINS_PER_MINUTE` to 120: back-to-back runs sign in more than ten times a minute from one address.
+- **Measured here** (`make e2e`, 2026-11-26): 4 tests (the refund flow and a keyboard-only pass, each at desktop size and 375 px) passed on three consecutive runs without retries.
+- **Not run by me:** "Create eval scenario" with a real model (no key here; tested against a fake API), and CI on GitHub.
+
 ### Phase 7: Full eval suite and analysis
 
 **Deliverables**
@@ -1474,7 +1495,7 @@ All of these are cheap to change.
 │   │                        grading, runner, metrics, report, selftest, harness, cli;
 │   │                        judge, label_cli and triage arrive in Phase 7
 │   └── tests/               unit/, integration/, mcp_server/, api/, support/
-├── frontend/                Next.js app, generated API types, Dockerfile, playwright/
+├── frontend/                Next.js app (app/, components/), lib/api (OpenAPI types and client), e2e/ (Playwright)
 ├── evals/
 │   ├── scenarios/           52 YAML files, plus drafts/
 │   ├── redteam/             28 YAML files
@@ -1509,6 +1530,9 @@ ADRs are written during the phase in which each decision lands.
 | Target | What it does |
 |---|---|
 | `make dev` | Full stack with hot reload, behind Caddy at http://localhost:8080 |
+| `make api-types` | Regenerates the frontend's typed client from the backend's OpenAPI document (CI checks for drift) |
+| `make e2e` | The Playwright smoke test on the key-free demo agent, in the official Playwright image |
+| `make eval-import-drafts` | Writes the console's valid scenario drafts to `evals/scenarios/drafts/` |
 | `make up`, `make down` | Start or stop the stack with production-like images |
 | `make seed` | Migrate and seed. Idempotent; the seed is set with `SEED=42`. |
 | `make test` | Backend unit, integration, MCP and API tests, plus frontend tests. No API key needed. |
@@ -1531,7 +1555,8 @@ ADRs are written during the phase in which each decision lands.
 Selected keys from `.env.example`:
 
 - `ANTHROPIC_API_KEY` is the only key a reviewer needs.
-- `RELAY_PROVIDER` is `anthropic` by default. It can also be `openai` (which needs `OPENAI_API_KEY` and `RELAY_OPENAI_MODEL`). The scripted provider is used in code (tests, and the key-free demo in Phase 6), not through this setting.
+- `RELAY_PROVIDER` is `anthropic` by default. It can also be `openai` (which needs `OPENAI_API_KEY` and `RELAY_OPENAI_MODEL`) or `scripted`, the key-free demo agent (changed in Phase 6: it was code-only before).
+- Console (Phase 6): `RELAY_PHOENIX_URL` (trace links), `RELAY_DRAFTER_MODEL` (`claude-opus-5-5`, drafts eval scenarios).
 - Agent: `RELAY_THINKING_PREFIX_MISMATCH` (`error` by default; production `drop_block`), `RELAY_AGENT_FALLBACKS` (server-side refusal fallbacks, on by default). A blank key in `.env` counts as unset.
 - Models: `RELAY_AGENT_MODEL=claude-opus-5-5`, `RELAY_AGENT_EFFORT=medium`, `RELAY_SIM_MODEL=claude-opus-5-5`, `RELAY_SIM_EFFORT=low`, `RELAY_JUDGE_MODEL=claude-sonnet-5-5` (Phase 7).
 - Infrastructure: `DATABASE_URL`, `REDIS_URL`, `RELAY_MCP_URL`, `RELAY_MCP_JWT_SECRET` (32+ characters; values containing `dev-only` are refused when `RELAY_ENV=prod`), `RELAY_SESSION_SECRET`.

@@ -114,6 +114,24 @@ smoke: .env ## One live refund conversation with Claude, checked end to end (nee
 approval-flow: ## The approval flow through the HTTP API with curl (needs make up, make seed, ANTHROPIC_API_KEY)
 	./docs/examples/approval-flow.sh
 
+# ---------------------------------------------------------------- frontend
+
+PLAYWRIGHT_IMAGE := mcr.microsoft.com/playwright:v1.65.1-noble
+
+.PHONY: api-types e2e
+api-types: ## Regenerate the frontend's typed API client from the backend's OpenAPI document
+	cd backend && uv run relay api openapi > ../frontend/lib/api/openapi.json
+	cd frontend && npx --yes openapi-typescript@7.13.0 lib/api/openapi.json -o lib/api/schema.d.ts
+
+# The browser smoke test needs no key: the stack runs the scripted demo agent. Playwright runs in
+# its official image, which has the browsers and their system libraries. Afterwards `make up`
+# puts the stack back on the provider in .env.
+e2e: .env frontend/node_modules ## Browser smoke test on the key-free demo agent (run make seed once first; restarts the stack with RELAY_PROVIDER=scripted)
+	RELAY_PROVIDER=scripted RELAY_LOGINS_PER_MINUTE=120 $(COMPOSE) up --detach --build --wait
+	docker run --rm --network host --ipc=host --user "$$(id -u):$$(id -g)" -e HOME=/tmp -e CI \
+		-e E2E_BASE_URL=http://localhost:$(RELAY_HTTP_PORT) -v "$(CURDIR)/frontend:/work" -w /work \
+		$(PLAYWRIGHT_IMAGE) npx playwright test
+
 # ---------------------------------------------------------------- evals
 
 # The harness runs on the host, like the tests, against the compose Postgres. Live targets print
@@ -121,7 +139,7 @@ approval-flow: ## The approval flow through the HTTP API with curl (needs make u
 EVAL := cd backend && $(TEST_ENV) uv run relay eval
 EVAL_FLAGS = $(if $(YES),--yes) $(if $(RESUME),--resume $(RESUME))
 
-.PHONY: eval eval-quick eval-selftest eval-mechanism eval-scenarios
+.PHONY: eval eval-quick eval-selftest eval-mechanism eval-scenarios eval-import-drafts
 eval: export ANTHROPIC_API_KEY := $(ANTHROPIC_API_KEY)
 eval: .env ## Run the eval suite with the live agent: SUBSET=v1 K=3 [YES=1] [RESUME=dir]
 	$(COMPOSE) up --detach --wait postgres redis
@@ -143,6 +161,10 @@ eval-mechanism: .env ## Mechanism check: without the confirmation rule, blocked 
 
 eval-scenarios: ## Regenerate evals/SCENARIOS.md from the scenario files
 	cd backend && uv run relay eval list --markdown > ../evals/SCENARIOS.md
+
+eval-import-drafts: .env ## Write the console's valid scenario drafts to evals/scenarios/drafts/ for review
+	$(COMPOSE) up --detach --wait postgres
+	$(EVAL) import-drafts
 
 # ---------------------------------------------------------------- later phases
 

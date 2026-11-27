@@ -192,6 +192,59 @@ def selftest(
         raise typer.Exit(1)
 
 
+@eval_app.command("import-drafts")
+def import_drafts(
+    out: Annotated[
+        Path | None, typer.Option(help="Where to write them. Default: evals/scenarios/drafts.")
+    ] = None,
+) -> None:
+    """Write the console's valid scenario drafts as YAML files, for a human to review.
+
+    The loader doesn't read evals/scenarios/drafts/; move a reviewed draft up a level (and
+    rename its id and file) to add it to the suite.
+    """
+    from relay.config import get_settings
+    from relay.evals.harness import evals_root
+
+    directory = out or evals_root() / "scenarios" / "drafts"
+    written = asyncio.run(_import_drafts(str(get_settings().database_url), directory))
+    typer.echo(f"{len(written)} drafts written to {directory}")
+    for path in written:
+        typer.echo(f"  {path.name}")
+
+
+async def _import_drafts(url: str, directory: Path) -> list[Path]:
+    import yaml
+    from sqlalchemy import select
+
+    from relay.db.models import ScenarioDraft
+    from relay.db.session import create_engine, make_sessionmaker
+    from relay.domain.enums import DraftStatus
+
+    engine = create_engine(url, pool_size=1)
+    try:
+        async with make_sessionmaker(engine)() as session:
+            rows = list(
+                await session.scalars(
+                    select(ScenarioDraft)
+                    .where(ScenarioDraft.status == DraftStatus.VALID)
+                    .order_by(ScenarioDraft.created_at)
+                )
+            )
+    finally:
+        await engine.dispose()
+    directory.mkdir(parents=True, exist_ok=True)
+    written = []
+    for row in rows:
+        scenario_id = str(yaml.safe_load(row.yaml or "")["id"])
+        path = directory / f"{scenario_id}.yaml"
+        note = " ".join(row.note.split())
+        header = f"# Draft {row.id} from conversation {row.conversation_id}.\n# Operator: {note}\n"
+        path.write_text(header + (row.yaml or ""), "utf-8")
+        written.append(path)
+    return written
+
+
 @eval_app.command("report")
 def report_command(run_dir: Annotated[Path, typer.Argument(help="A run directory.")]) -> None:
     """Rebuild report.json and report.md from a run's config, results and errors."""

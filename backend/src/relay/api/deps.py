@@ -108,7 +108,7 @@ async def enforce(services: Services, name: str, subject: str, limit: int, windo
 
 
 async def chat_rate(request: Request, services: Svc) -> None:
-    """30 chat requests a minute per IP address, whoever is signed in."""
+    """30 chat writes a minute per IP address, whoever is signed in (reads aren't counted)."""
     limit = services.settings.chat_requests_per_minute
     await enforce(services, "chat", client_ip(request), limit, MINUTE)
 

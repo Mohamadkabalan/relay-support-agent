@@ -41,6 +41,7 @@ from relay.domain.enums import (
     ActorType,
     ApprovalStatus,
     ConversationStatus,
+    DraftStatus,
     EscalationPriority,
     EscalationReason,
     EscalationStatus,
@@ -652,6 +653,30 @@ class InboxItem(Base):
     payload: Mapped[dict[str, Any]]
     created_at: Mapped[datetime]
     turn_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("turns.id"))  # claimed by
+
+
+class ScenarioDraft(Base):
+    """An eval scenario drafted from a conversation (§10). The YAML holds no real customer data.
+
+    `conversation_id` and `created_by` are plain UUIDs, like the audit trail's: a draft outlives
+    the demo reset that deletes its conversation and operator.
+    """
+
+    __tablename__ = "scenario_drafts"
+    __table_args__ = (one_of("status", DraftStatus),)
+
+    id: Mapped[uuid.UUID] = uuid_pk()
+    conversation_id: Mapped[uuid.UUID] = mapped_column(index=True)
+    created_by: Mapped[uuid.UUID]  # the operator
+    note: Mapped[str] = mapped_column(Text)  # what should have happened
+    status: Mapped[DraftStatus] = mapped_column(TextEnum(DraftStatus))
+    yaml: Mapped[str | None] = mapped_column(Text)
+    rationale: Mapped[str | None] = mapped_column(Text)
+    problems: Mapped[list[Any]] = mapped_column(default=list)
+    model: Mapped[str] = mapped_column(Text)
+    cost_micros: Mapped[int | None] = mapped_column(BigInteger)
+    created_at: Mapped[datetime]
+    finished_at: Mapped[datetime | None]
 
 
 class ConversationEvent(Base):

@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse
 from relay import __version__
 from relay.api import health
 from relay.api.middleware import BodyLimit, OriginCheck, RequestContext
-from relay.api.routes import auth, chat, console
+from relay.api.routes import auth, chat, console, drafts, metrics
 from relay.api.services import Overrides, open_services
 from relay.config import Settings, get_settings
 from relay.domain.errors import ConflictError, DomainError, NotFoundError
@@ -57,7 +57,15 @@ def create_app(settings: Settings | None = None, overrides: Overrides | None = N
     app.state.settings = resolved
     # Each router carries the full /api prefix itself, so a matched route's path is the whole
     # template (the request spans are named by it).
-    for router in (health.router, auth.router, chat.router, console.router):
+    routers = (
+        health.router,
+        auth.router,
+        chat.router,
+        console.router,
+        metrics.router,
+        drafts.router,
+    )
+    for router in routers:
         app.include_router(router)
 
     @app.exception_handler(DomainError)

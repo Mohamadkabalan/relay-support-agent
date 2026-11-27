@@ -11,6 +11,7 @@ from relay.agent.locks import LocalLocks, Locks
 from relay.agent.loop import Agent, AgentLimits
 from relay.agent.providers.anthropic import AnthropicProvider, PrefixMismatch
 from relay.agent.providers.base import ModelProvider
+from relay.agent.providers.demo import DemoProvider
 from relay.agent.providers.openai import OpenAIProvider
 from relay.agent.spend import SpendGuard
 from relay.agent.store import ConversationStore
@@ -40,6 +41,8 @@ class MissingCredentialsError(RuntimeError):
 def build_provider(
     settings: Settings, *, prefix_mismatch: PrefixMismatch | None = None
 ) -> ModelProvider:
+    if settings.provider == "scripted":
+        return DemoProvider()
     if settings.provider == "openai":
         if settings.openai_api_key is None:
             raise MissingCredentialsError("Set OPENAI_API_KEY to use RELAY_PROVIDER=openai.")

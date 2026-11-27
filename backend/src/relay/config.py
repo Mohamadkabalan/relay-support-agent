@@ -80,7 +80,8 @@ class Settings(BaseSettings):
 
     # The model provider behind the agent, and its credentials. Keys are read only from the
     # environment; the providers' own variable names are used so the SDKs' docs apply.
-    provider: Literal["anthropic", "openai"] = "anthropic"
+    # "scripted" is the key-free demo agent (relay/agent/providers/demo.py): no model is called.
+    provider: Literal["anthropic", "openai", "scripted"] = "anthropic"
     anthropic_api_key: SecretStr | None = Field(
         default=None, validation_alias=AliasChoices("ANTHROPIC_API_KEY", "anthropic_api_key")
     )
@@ -103,6 +104,8 @@ class Settings(BaseSettings):
     # is what is being measured.
     sim_model: str = "claude-opus-5-5"
     sim_effort: Literal["low", "medium", "high", "xhigh", "max"] = "low"
+    # Drafts eval scenarios from conversations in the console (§10).
+    drafter_model: str = "claude-opus-5-5"
 
     # ---------------------------------------------------------------- the API (Phase 5)
 
@@ -148,6 +151,8 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("OTEL_EXPORTER_OTLP_ENDPOINT", "otel_endpoint"),
     )
     trace_content: Literal["redacted", "none", "full"] = "redacted"
+    # Where an operator's browser reaches Phoenix, for the console's trace links. None: no links.
+    phoenix_url: str | None = "http://localhost:6006"
 
     @field_validator("anthropic_api_key", "openai_api_key", mode="before")
     @classmethod
@@ -157,7 +162,7 @@ class Settings(BaseSettings):
             return None
         return value
 
-    @field_validator("operator_password_hash", "otel_endpoint", mode="before")
+    @field_validator("operator_password_hash", "otel_endpoint", "phoenix_url", mode="before")
     @classmethod
     def _blank_is_unset(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():

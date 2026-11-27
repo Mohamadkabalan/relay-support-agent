@@ -47,11 +47,18 @@ Every route needs an operator session (401 without a session, 403 for a customer
 | `GET /api/console/conversations/{id}` | The replay: every transcript entry, turns with model and tool calls, costs, trace IDs, approvals, escalations |
 | `GET /api/console/conversations/{id}/events` | The same event stream, plus console-only events (`guard.input`) |
 | `POST /api/console/conversations/{id}/messages` `{"text"}` | Write to the customer of an escalated conversation. The next turn relays it to the agent as a trusted note |
-| `GET /api/console/approvals`, `GET .../approvals/{number}` | The queue (pending by default, `?status=` for others) |
+| `GET /api/console/approvals`, `GET .../approvals/{number}` | The queue (`?status=pending`; all statuses without it) |
 | `POST /api/console/approvals/{number}/decision` `{"decision": "approve"\|"reject", "note"}` | One transaction: lock, re-check the policy, execute, audit, queue the resume turn. A rejection needs a note |
 | `GET /api/console/escalations`, `POST .../escalations/{number}/resolve` `{"note", "hand_back"}` | Resolve a case, then close the conversation or hand it back to the agent |
+| `GET /api/console/metrics?days=14` | The dashboard: conversations per day, resolution, escalation and thumbs-up rates, approval turnaround, tool errors and policy denials per tool, cost per conversation, time to first token, cache share, refusals, fallbacks, injection flags. Each comes with its definition |
+| `POST /api/console/conversations/{id}/scenario-drafts` `{"note"}` | "Create eval scenario": Claude drafts a scenario from the conversation in the background (202). Needs `ANTHROPIC_API_KEY`; counts against the spend cap |
+| `GET /api/console/scenario-drafts`, `GET .../scenario-drafts/{id}` | Drafts: `generating`, then `valid`, `invalid` (with its problems) or `failed`. `make eval-import-drafts` writes the valid ones to `evals/scenarios/drafts/` |
 
-Every operator write has an audit row: who, what, for whom, why, and the trace ID.
+Every operator write has an audit row: who, what, for whom, why, and the trace ID. The replay links each turn to its trace in Phoenix (`RELAY_PHOENIX_URL`), and the conversation to its Phoenix session.
+
+## The typed client
+
+The frontend calls the API through `openapi-fetch` with types generated from `/api/openapi.json` (`frontend/lib/api/`). `make api-types` regenerates both files; CI fails if they differ from what the backend produces.
 
 ## Events
 
@@ -74,7 +81,7 @@ Every operator write has an audit row: who, what, for whom, why, and the trace I
 | Request body | 16 KiB | 413 |
 | Message length | 2,000 characters | 413, before anything is stored |
 | Messages per browser | 8 a minute, 120 a day | 429 with `Retry-After` |
-| Chat requests per IP | 30 a minute | 429 |
+| Chat writes per IP (start, send, feedback, close) | 30 a minute | 429 |
 | Logins per IP | 10 a minute | 429 |
 | Operator requests | 120 a minute | 429 |
 | Messages waiting for a running turn | 3 | 429 |

@@ -131,6 +131,10 @@ services:
       RELAY_OPERATOR_EMAIL: ${RELAY_OPERATOR_EMAIL:-operator@relay.example}
       RELAY_OPERATOR_PASSWORD_HASH: ${RELAY_OPERATOR_PASSWORD_HASH:-}
       RELAY_DAILY_SPEND_CAP_USD: ${RELAY_DAILY_SPEND_CAP_USD:-20}
+      # `make e2e` raises it: the browser tests sign in many times a minute from one address.
+      RELAY_LOGINS_PER_MINUTE: ${RELAY_LOGINS_PER_MINUTE:-10}
+      # Where the console links to traces (an operator's browser, not the API, opens them).
+      RELAY_PHOENIX_URL: ${RELAY_PHOENIX_URL:-http://localhost:${PHOENIX_HOST_PORT:-6006}}
     healthcheck:
       # /api/readyz returns 503 until Postgres and Redis answer, which fails urlopen.
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/readyz', timeout=3)"]

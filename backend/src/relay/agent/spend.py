@@ -57,13 +57,18 @@ class SpendGuard(Protocol):
 def worst_case_micros(model: str, request: ModelRequest) -> int:
     """The most this request can cost: every input token at the full input price, plus all of
     `max_tokens` at the output price. A model without a price is priced like the dearest one."""
-    price = PRICES.get(model) or max(PRICES.values(), key=lambda p: p.output)
     chars = len(request.system) + sum(len(raw) for raw in request.transcript)
     chars += sum(
         len(tool.description) + len(json.dumps(tool.input_schema)) for tool in request.tools
     )
-    input_tokens = chars // CHARS_PER_TOKEN + 1
-    total = input_tokens * price.input + request.max_tokens * price.output
+    return worst_case_for(model, chars, request.max_tokens)
+
+
+def worst_case_for(model: str, input_chars: int, max_tokens: int) -> int:
+    """The worst case for `input_chars` of input and `max_tokens` of output."""
+    price = PRICES.get(model) or max(PRICES.values(), key=lambda p: p.output)
+    input_tokens = input_chars // CHARS_PER_TOKEN + 1
+    total = input_tokens * price.input + max_tokens * price.output
     return int(total.to_integral_value()) + 1
 
 

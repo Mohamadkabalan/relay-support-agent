@@ -2,7 +2,7 @@
 
 A customer-support agent for Pixel & Volt, a fictional online electronics store. Customers chat with it to check orders, track packages, change shipping addresses, start returns and request refunds. The agent acts only through tools on an MCP server, risky actions wait for a human operator, and an eval suite measures the whole system.
 
-> **Status: Phase 5 of 8 (HTTP API, approvals, streaming, tracing).** The store, its policy engine, its seed data, the nine MCP tools and the agent work. You can chat with the agent in a terminal or through the HTTP API, approve refunds as an operator, and follow every turn in Phoenix. The eval harness and its first 23 scenarios pass their self-tests. No eval run with the model has happened yet, so there are no eval numbers. There is no web UI yet (Phase 6). [PLAN.md](PLAN.md) has the design and the roadmap; this README becomes the full project README in Phase 8.
+> **Status: Phase 6 of 8 (the web app).** The store, its policy engine, its seed data, the nine MCP tools and the agent work. In the browser you can pick a demo customer, chat with the agent, approve refunds in the operator console, replay every turn with its costs and traces, and turn a conversation into an eval scenario. The eval harness and its first 23 scenarios pass their self-tests. No eval run with the model has happened yet, so there are no eval numbers.
 
 ## Run it locally
 
@@ -49,6 +49,19 @@ make smoke                                        # one live refund conversation
 `make chat` prints what the customer sees, the status labels, approvals and escalations, and each turn's tokens and cost. Writes it makes are real rows in the demo database; `make seed RESET=1` puts everything back. `make smoke` runs on a throwaway database. It costs a few cents and checks three things: the refund was issued, no turn failed, and the second model call read the prompt cache.
 
 The transcript is append-only and replayed byte for byte ([ADR-0005](docs/adr/0005-append-only-transcript.md)). The system prompt is in [backend/src/relay/agent/prompts/v1.md](backend/src/relay/agent/prompts/v1.md).
+
+## The web app
+
+Open http://localhost:8080, pick one of the six demo customers and open the chat. Then open the operator console (link at the top) in another tab of the same browser: in demo mode it shows only your own demo customers.
+
+- **The chat** streams the agent's replies and shows what it is doing ("Checking your order…"), approval cards that update when an operator decides, and thumbs up or down. It reconnects by itself.
+- **The console** has live conversations, the approval queue with a decision drawer, escalations (reply, resolve, hand back), a metrics dashboard, and a replay of every conversation: each turn's model and tool calls, policy decisions, tokens, cost and a link to its trace in Phoenix. "Create eval scenario" drafts an eval scenario from a conversation (needs a key).
+
+No API key? Set `RELAY_PROVIDER=scripted` in `.env` and `make up`: a rule-based demo agent then tells the damaged-headphones refund story through the real tools, approvals and events, without calling a model.
+
+```bash
+make e2e     # the browser smoke test (Playwright, 375 px and desktop) on the key-free demo agent
+```
 
 ## The HTTP API
 
@@ -97,7 +110,7 @@ backend/    Python package `relay`: API (FastAPI), MCP server, CLI, tests
             relay/api: sessions, rate limits, chat, console, SSE; relay/telemetry: traces, logs
             relay/evals: eval harness (template DB, simulator, graders, runner, reports)
             relay/db: models and migrations; relay/seed: demo data; relay/kb: help center
-frontend/   Next.js app: chat widget and operator console (Phase 6)
+frontend/   Next.js app: store page, chat widget, operator console; lib/api: typed client; e2e/
 deploy/     Caddy and Postgres configuration
 docs/       mcp.md (Claude Desktop, Inspector), api.md (routes, events, limits), examples/,
             adr/ (architecture decision records)

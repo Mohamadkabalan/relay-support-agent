@@ -5,12 +5,15 @@ approvals, and the chat endpoints answer 503 with the reason. Tests pass `Overri
 the scripted model, the MCP app in process, a frozen clock or tighter limits.
 """
 
+import asyncio
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Coroutine
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
+from typing import Any
 
+from anthropic import AsyncAnthropic
 from fastapi import HTTPException, Request, status
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
@@ -40,6 +43,7 @@ class Overrides:
     clock: Clock | None = None
     limits: AgentLimits | None = None
     sweep_every_s: float | None = 60.0  # None: no background sweep (tests call it themselves)
+    drafter: AsyncAnthropic | None = None  # the client that drafts eval scenarios
 
 
 @dataclass
@@ -57,6 +61,14 @@ class Services:
     agent: Agent | None
     scheduler: Scheduler | None
     agent_problem: str | None = None  # why there is no agent
+    drafter: AsyncAnthropic | None = None  # None: drafting scenarios needs ANTHROPIC_API_KEY
+    background: set[asyncio.Task[None]] = field(default_factory=set)
+
+    def spawn(self, work: Coroutine[Any, Any, None]) -> None:
+        """Run `work` in the background, keeping a reference until it finishes."""
+        task = asyncio.create_task(work)
+        self.background.add(task)
+        task.add_done_callback(self.background.discard)
 
     @property
     def engine(self) -> AsyncEngine:
@@ -142,6 +154,7 @@ async def open_services(
             agent=agent,
             scheduler=scheduler,
             agent_problem=problem,
+            drafter=overrides.drafter or _drafter(settings),
         )
         if scheduler is not None and overrides.sweep_every_s is not None:
             scheduler.start_sweeping(overrides.sweep_every_s)
@@ -150,6 +163,16 @@ async def open_services(
         finally:
             if scheduler is not None:
                 await scheduler.stop()
+            for task in list(services.background):
+                task.cancel()
+            await asyncio.gather(*services.background, return_exceptions=True)
+
+
+def _drafter(settings: Settings) -> AsyncAnthropic | None:
+    key = settings.anthropic_api_key
+    if key is None:
+        return None
+    return AsyncAnthropic(api_key=key.get_secret_value(), max_retries=2, timeout=300)
 
 
 def get_services(request: Request) -> Services:

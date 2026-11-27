@@ -22,7 +22,9 @@ from relay.api.services import Services
 from relay.db.models import Approval, Conversation, ConversationEvent, Message
 from relay.domain.enums import ApprovalStatus, ConversationStatus, MessageKind
 
-router = APIRouter(prefix="/api/conversations", tags=["chat"], dependencies=[Depends(chat_rate)])
+router = APIRouter(prefix="/api/conversations", tags=["chat"])
+# The per-IP limit counts writes. Sending also has its own per-browser limit (`message_rate`).
+WRITE = [Depends(chat_rate)]
 
 Author = Literal["customer", "assistant", "team"]
 
@@ -69,7 +71,7 @@ class Feedback(BaseModel):
     rating: Literal["up", "down"]
 
 
-@router.post("", status_code=status.HTTP_201_CREATED)
+@router.post("", status_code=status.HTTP_201_CREATED, dependencies=WRITE)
 async def start(customer: CustomerAuth, services: Svc) -> Created:
     agent, _ = services.require_agent()
     return Created(id=await agent.start_conversation(customer.customer_id))
@@ -123,7 +125,7 @@ async def show(
 @router.post(
     "/{conversation_id}/messages",
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(message_rate)],
+    dependencies=[*WRITE, Depends(message_rate)],
     responses={413: {"description": "The message is too long."}},
 )
 async def send(
@@ -184,7 +186,9 @@ async def stream_events(
         yield event
 
 
-@router.post("/{conversation_id}/feedback", status_code=status.HTTP_204_NO_CONTENT)
+@router.post(
+    "/{conversation_id}/feedback", status_code=status.HTTP_204_NO_CONTENT, dependencies=WRITE
+)
 async def feedback(
     conversation_id: uuid.UUID, body: Feedback, customer: CustomerAuth, services: Svc
 ) -> None:
@@ -194,7 +198,7 @@ async def feedback(
         row.rating = 1 if body.rating == "up" else -1
 
 
-@router.post("/{conversation_id}/close", status_code=status.HTTP_204_NO_CONTENT)
+@router.post("/{conversation_id}/close", status_code=status.HTTP_204_NO_CONTENT, dependencies=WRITE)
 async def close(conversation_id: uuid.UUID, customer: CustomerAuth, services: Svc) -> None:
     conversation = await owned(services, conversation_id, customer.customer_id)
     if conversation.status is ConversationStatus.CLOSED:

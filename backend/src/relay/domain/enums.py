@@ -177,3 +177,12 @@ class ToolCallOutcome(StrEnum):
     DUPLICATE = "duplicate"  # same call earlier in the turn: answered from that result
     REJECTED = "rejected"  # not run: unknown tool, unreadable arguments, too many calls
     UNAVAILABLE = "unavailable"  # timed out or failed in transport, after one retry
+
+
+class DraftStatus(StrEnum):
+    """An eval scenario drafted from a conversation (§10)."""
+
+    GENERATING = "generating"
+    VALID = "valid"  # parses, passes scenario validation and contains no real customer details
+    INVALID = "invalid"  # the model answered, but the draft fails a check (see its problems)
+    FAILED = "failed"  # no draft: the model call failed

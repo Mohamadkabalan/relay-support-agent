@@ -139,6 +139,7 @@ class ReplayTurn(_Row):
     retracted: bool
     error: str | None
     trace_id: str | None
+    trace_url: str | None = None  # the turn's trace in Phoenix
     started_at: datetime
     finished_at: datetime | None
     model_calls: list[ReplayModelCall] = []
@@ -179,6 +180,7 @@ class ConversationReplay(BaseModel):
     injection_flags: int
     cost_micros: int
     cost_complete: bool
+    session_url: str | None  # every turn of the conversation in Phoenix
     messages: list[ReplayMessage]
     turns: list[ReplayTurn]
     approvals: list[ApprovalRow]
@@ -275,7 +277,7 @@ async def replay(
     """Everything about one conversation: transcript, turns with model and tool calls, costs,
     trace IDs, approvals and escalations."""
     async with services.sessionmaker() as db:
-        conversation, customer = await _visible_conversation(db, operator, conversation_id)
+        conversation, customer = await find_conversation(db, operator, conversation_id)
         messages = await db.scalars(
             select(Message).where(Message.conversation_id == conversation_id).order_by(Message.seq)
         )
@@ -291,7 +293,13 @@ async def replay(
         tool_calls = await db.scalars(
             select(ToolCall).where(ToolCall.turn_id.in_(turn_ids)).order_by(ToolCall.seq)
         )
-        turns = {turn.id: ReplayTurn.model_validate(turn) for turn in turn_rows}
+        phoenix = services.settings.phoenix_url
+        turns = {
+            turn.id: ReplayTurn.model_validate(turn).model_copy(
+                update={"trace_url": _phoenix(phoenix, "traces", turn.trace_id)}
+            )
+            for turn in turn_rows
+        }
         for call in model_calls:
             turns[call.turn_id].model_calls.append(ReplayModelCall.model_validate(call))
         for tool in tool_calls:
@@ -326,6 +334,7 @@ async def replay(
         injection_flags=conversation.injection_flags,
         cost_micros=conversation.cost_micros,
         cost_complete=conversation.cost_complete,
+        session_url=_phoenix(services.settings.phoenix_url, "sessions", str(conversation.id)),
         messages=[ReplayMessage.model_validate(m) for m in messages],
         turns=list(turns.values()),
         approvals=approval_rows,
@@ -338,7 +347,7 @@ async def visible_conversation(
 ) -> Conversation:
     """A dependency, so the 404 is decided before a streaming response starts."""
     async with services.sessionmaker() as db:
-        conversation, _ = await _visible_conversation(db, operator, conversation_id)
+        conversation, _ = await find_conversation(db, operator, conversation_id)
     return conversation
 
 
@@ -369,7 +378,7 @@ async def reply(
             f"Replies are 1 to {services.settings.max_message_chars} characters.",
         )
     async with services.sessionmaker() as db, db.begin():
-        conversation, _ = await _visible_conversation(db, operator, conversation_id, lock=True)
+        conversation, _ = await find_conversation(db, operator, conversation_id, lock=True)
         if conversation.status is not ConversationStatus.ESCALATED:
             raise HTTPException(
                 status.HTTP_409_CONFLICT,
@@ -420,7 +429,7 @@ async def reply(
 async def approval_queue(
     operator: OperatorAuth,
     services: Svc,
-    status_filter: Annotated[ApprovalStatus | None, Query(alias="status")] = ApprovalStatus.PENDING,
+    status_filter: Annotated[ApprovalStatus | None, Query(alias="status")] = None,
 ) -> list[ApprovalRow]:
     query = (
         select(Approval)
@@ -485,9 +494,7 @@ async def decide(
 async def escalations(
     operator: OperatorAuth,
     services: Svc,
-    status_filter: Annotated[
-        EscalationStatus | None, Query(alias="status")
-    ] = EscalationStatus.OPEN,
+    status_filter: Annotated[EscalationStatus | None, Query(alias="status")] = None,
 ) -> list[EscalationRow]:
     query = (
         select(Escalation, Customer.full_name)
@@ -588,7 +595,7 @@ def visible(
     )
 
 
-async def _visible_conversation(
+async def find_conversation(
     db: AsyncSession, operator: OperatorSession, conversation_id: uuid.UUID, *, lock: bool = False
 ) -> tuple[Conversation, Customer]:
     query = (
@@ -631,6 +638,13 @@ async def _approval_rows(db: AsyncSession, services: Services, query: Any) -> li
             )
         )
     return rows
+
+
+def _phoenix(base: str | None, kind: str, identifier: str | None) -> str | None:
+    """A link Phoenix resolves itself: /redirects/traces/<trace id>, /redirects/sessions/<id>."""
+    if base is None or identifier is None:
+        return None
+    return f"{base.rstrip('/')}/redirects/{kind}/{identifier}"
 
 
 def _deps(db: AsyncSession, services: Services) -> Deps:

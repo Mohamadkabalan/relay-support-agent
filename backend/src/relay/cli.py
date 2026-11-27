@@ -91,6 +91,24 @@ def operator_hash_password() -> None:
     typer.echo(PasswordHasher().hash(password))
 
 
+@api_app.command("openapi")
+def api_openapi() -> None:
+    """Print the API's OpenAPI document (the frontend's typed client is generated from it).
+
+    It needs no database or Redis: the routes are built, not served.
+    """
+    from relay.api.app import create_app
+    from relay.config import Settings
+
+    settings = Settings.model_validate(
+        {
+            "database_url": "postgresql+asyncpg://openapi@localhost/openapi",
+            "redis_url": "redis://localhost:6379/0",
+        }
+    )
+    typer.echo(json.dumps(create_app(settings).openapi(), indent=2, sort_keys=True))
+
+
 @mcp_app.command("serve")
 def mcp_serve(
     transport: Annotated[Transport, typer.Option(help="How clients connect.")] = (

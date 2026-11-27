@@ -16,6 +16,7 @@ from typing import Any
 
 import httpx2
 import uvicorn
+from anthropic import AsyncAnthropic
 from fastapi import FastAPI
 from redis.asyncio import Redis
 from sqlalchemy import select
@@ -71,6 +72,7 @@ async def running_api(
     *,
     clock: FrozenClock,
     provider: ModelProvider | None = None,
+    drafter: AsyncAnthropic | None = None,
     **settings: Any,
 ) -> AsyncIterator[RunningApi]:
     values: dict[str, Any] = {
@@ -98,7 +100,13 @@ async def running_api(
     )
     app = create_app(
         config,
-        Overrides(provider=provider or scripted, tools=tools, clock=clock, sweep_every_s=None),
+        Overrides(
+            provider=provider or scripted,
+            tools=tools,
+            clock=clock,
+            sweep_every_s=None,
+            drafter=drafter,
+        ),
     )
     server = uvicorn.Server(
         uvicorn.Config(app, host="127.0.0.1", port=0, log_config=None, lifespan="on")
